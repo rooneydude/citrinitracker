@@ -1,0 +1,693 @@
+"use client";
+
+import { useState, useMemo, useCallback } from "react";
+import { parseGroupHoldings } from "@/lib/parseSpreadsheet";
+import { parseRobinhoodCSV } from "@/lib/parseRobinhoodCSV";
+import { rebalance, isAvailableOnRobinhood } from "@/lib/rebalance";
+import {
+  GroupHolding,
+  RobinhoodHolding,
+  RebalanceResult,
+  TradeAction,
+} from "@/lib/types";
+
+function formatDollar(n: number): string {
+  const abs = Math.abs(n);
+  const formatted =
+    abs >= 1000
+      ? abs.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : abs.toFixed(2);
+  return n < 0 ? `-$${formatted}` : `$${formatted}`;
+}
+
+function formatShares(n: number): string {
+  const abs = Math.abs(n);
+  return (n < 0 ? "-" : "+") + abs.toFixed(abs < 1 ? 4 : 2);
+}
+
+function formatPct(n: number): string {
+  return n.toFixed(2) + "%";
+}
+
+// Step Indicator
+function StepIndicator({
+  step,
+  currentStep,
+}: {
+  step: number;
+  currentStep: number;
+}) {
+  const isActive = currentStep === step;
+  const isDone = currentStep > step;
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${
+          isDone
+            ? "bg-accent border-accent text-background"
+            : isActive
+            ? "border-accent text-accent"
+            : "border-card-border text-card-border"
+        }`}
+      >
+        {isDone ? "\u2713" : step}
+      </div>
+    </div>
+  );
+}
+
+// File Upload
+function FileUpload({
+  onParsed,
+}: {
+  onParsed: (holdings: GroupHolding[]) => void;
+}) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      if (!file.name.match(/\.xlsx?$/i)) {
+        setError("Please upload an .xlsx file");
+        return;
+      }
+      try {
+        const buffer = await file.arrayBuffer();
+        const holdings = parseGroupHoldings(buffer);
+        if (holdings.length === 0) {
+          setError("No holdings found in spreadsheet");
+          return;
+        }
+        setFileName(file.name);
+        onParsed(holdings);
+      } catch {
+        setError("Failed to parse spreadsheet. Check the format.");
+      }
+    },
+    [onParsed]
+  );
+
+  return (
+    <div
+      className={`border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer ${
+        isDragging
+          ? "border-accent bg-accent-dim"
+          : fileName
+          ? "border-accent/50 bg-accent-dim"
+          : "border-card-border hover:border-foreground/30"
+      }`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+      }}
+      onClick={() => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".xlsx,.xls";
+        input.onchange = (e) => {
+          const file = (e.target as HTMLInputElement).files?.[0];
+          if (file) handleFile(file);
+        };
+        input.click();
+      }}
+    >
+      {fileName ? (
+        <div>
+          <p className="text-accent font-semibold text-lg">{fileName}</p>
+          <p className="text-foreground/50 text-sm mt-1">
+            Click or drag to replace
+          </p>
+        </div>
+      ) : (
+        <div>
+          <p className="text-foreground/70 text-lg">
+            Drop your group holdings .xlsx here
+          </p>
+          <p className="text-foreground/40 text-sm mt-2">or click to browse</p>
+        </div>
+      )}
+      {error && <p className="text-red mt-3 text-sm">{error}</p>}
+    </div>
+  );
+}
+
+// Exclusion List
+function ExclusionManager({
+  holdings,
+  excluded,
+  onToggle,
+}: {
+  holdings: GroupHolding[];
+  excluded: Set<string>;
+  onToggle: (ticker: string) => void;
+}) {
+  const autoExcluded = holdings.filter((h) => !isAvailableOnRobinhood(h));
+  const available = holdings.filter((h) => isAvailableOnRobinhood(h));
+
+  return (
+    <div className="space-y-4">
+      {autoExcluded.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-foreground/60 uppercase tracking-wide mb-2">
+            Auto-excluded (not on Robinhood)
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {autoExcluded.map((h) => (
+              <span
+                key={h.ticker}
+                className="px-3 py-1 rounded-full bg-red-dim text-red text-xs font-mono"
+                title={`${h.name} - ${h.exchange || "Unknown exchange"}`}
+              >
+                {h.cleanTicker}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div>
+        <h4 className="text-sm font-semibold text-foreground/60 uppercase tracking-wide mb-2">
+          Robinhood-available stocks
+          <span className="text-foreground/30 font-normal ml-2">
+            (click to exclude)
+          </span>
+        </h4>
+        <div className="flex flex-wrap gap-2">
+          {available.map((h) => {
+            const isExcluded = excluded.has(h.ticker);
+            return (
+              <button
+                key={h.ticker}
+                onClick={() => onToggle(h.ticker)}
+                className={`px-3 py-1 rounded-full text-xs font-mono transition-all ${
+                  isExcluded
+                    ? "bg-red-dim text-red line-through opacity-60"
+                    : "bg-accent-dim text-accent hover:bg-accent/20"
+                }`}
+                title={h.name}
+              >
+                {h.cleanTicker}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Robinhood Input
+function RobinhoodInput({
+  portfolioValue,
+  setPortfolioValue,
+  holdings,
+  setHoldings,
+}: {
+  portfolioValue: string;
+  setPortfolioValue: (v: string) => void;
+  holdings: RobinhoodHolding[];
+  setHoldings: (h: RobinhoodHolding[]) => void;
+}) {
+  const [csvText, setCsvText] = useState("");
+  const [manualTicker, setManualTicker] = useState("");
+  const [manualShares, setManualShares] = useState("");
+  const [manualPrice, setManualPrice] = useState("");
+
+  const handleCSVPaste = () => {
+    const parsed = parseRobinhoodCSV(csvText);
+    if (parsed.length > 0) {
+      setHoldings(parsed);
+      const total = parsed.reduce((sum, h) => sum + h.marketValue, 0);
+      if (total > 0) setPortfolioValue(total.toFixed(2));
+    }
+  };
+
+  const addManualHolding = () => {
+    const ticker = manualTicker.toUpperCase().trim();
+    const shares = parseFloat(manualShares);
+    const price = parseFloat(manualPrice);
+    if (!ticker || isNaN(shares) || shares <= 0) return;
+
+    const newHolding: RobinhoodHolding = {
+      ticker,
+      shares,
+      currentPrice: isNaN(price) ? 0 : price,
+      marketValue: isNaN(price) ? 0 : shares * price,
+    };
+
+    const updated = [...holdings.filter((h) => h.ticker !== ticker), newHolding];
+    setHoldings(updated);
+    setManualTicker("");
+    setManualShares("");
+    setManualPrice("");
+  };
+
+  const removeHolding = (ticker: string) => {
+    setHoldings(holdings.filter((h) => h.ticker !== ticker));
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <label className="block text-sm font-semibold text-foreground/70 mb-2">
+          Total Portfolio Value ($)
+        </label>
+        <input
+          type="text"
+          value={portfolioValue}
+          onChange={(e) =>
+            setPortfolioValue(e.target.value.replace(/[^0-9.]/g, ""))
+          }
+          placeholder="e.g. 50000"
+          className="w-full bg-background border border-card-border rounded-lg px-4 py-3 text-lg font-mono text-foreground placeholder:text-foreground/30 focus:outline-none focus:border-accent"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-semibold text-foreground/70 mb-2">
+          Current Holdings
+        </label>
+
+        <details className="mb-4">
+          <summary className="cursor-pointer text-sm text-accent hover:underline">
+            Paste Robinhood CSV export
+          </summary>
+          <div className="mt-2 space-y-2">
+            <textarea
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              rows={5}
+              placeholder={
+                "Instrument,Quantity,Current Price,Equity\nAAPL,10,180.50,1805.00\nNVDA,25,177.64,4441.00"
+              }
+              className="w-full bg-background border border-card-border rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-foreground/20 focus:outline-none focus:border-accent"
+            />
+            <button
+              onClick={handleCSVPaste}
+              className="px-4 py-2 bg-accent text-background font-semibold rounded-lg text-sm hover:bg-accent/80 transition"
+            >
+              Import CSV
+            </button>
+          </div>
+        </details>
+
+        <div className="flex gap-2 items-end">
+          <div className="flex-1">
+            <input
+              value={manualTicker}
+              onChange={(e) => setManualTicker(e.target.value)}
+              placeholder="Ticker"
+              className="w-full bg-background border border-card-border rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-foreground/30 focus:outline-none focus:border-accent"
+              onKeyDown={(e) => e.key === "Enter" && addManualHolding()}
+            />
+          </div>
+          <div className="flex-1">
+            <input
+              value={manualShares}
+              onChange={(e) => setManualShares(e.target.value)}
+              placeholder="Shares"
+              type="number"
+              className="w-full bg-background border border-card-border rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-foreground/30 focus:outline-none focus:border-accent"
+              onKeyDown={(e) => e.key === "Enter" && addManualHolding()}
+            />
+          </div>
+          <div className="flex-1">
+            <input
+              value={manualPrice}
+              onChange={(e) => setManualPrice(e.target.value)}
+              placeholder="Price (opt)"
+              type="number"
+              className="w-full bg-background border border-card-border rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-foreground/30 focus:outline-none focus:border-accent"
+              onKeyDown={(e) => e.key === "Enter" && addManualHolding()}
+            />
+          </div>
+          <button
+            onClick={addManualHolding}
+            className="px-4 py-2 bg-card border border-card-border text-foreground rounded-lg text-sm hover:border-accent transition"
+          >
+            Add
+          </button>
+        </div>
+
+        {holdings.length > 0 && (
+          <div className="mt-4 space-y-1">
+            {holdings.map((h) => (
+              <div
+                key={h.ticker}
+                className="flex justify-between items-center bg-card rounded-lg px-3 py-2 text-sm font-mono"
+              >
+                <span className="text-accent font-bold">{h.ticker}</span>
+                <span className="text-foreground/60">
+                  {h.shares} shares
+                  {h.currentPrice > 0 && ` @ $${h.currentPrice.toFixed(2)}`}
+                  {h.marketValue > 0 && (
+                    <span className="ml-2 text-foreground/40">
+                      = {formatDollar(h.marketValue)}
+                    </span>
+                  )}
+                </span>
+                <button
+                  onClick={() => removeHolding(h.ticker)}
+                  className="text-red/60 hover:text-red ml-2"
+                >
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {holdings.length === 0 && (
+          <p className="text-foreground/30 text-sm mt-3 italic">
+            No current holdings entered. Leave empty if starting fresh.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Trade Table
+function TradeTable({ result }: { result: RebalanceResult }) {
+  const buys = result.trades.filter((t) => t.action === "BUY");
+  const sells = result.trades.filter((t) => t.action === "SELL");
+
+  const totalBuy = buys.reduce((s, t) => s + t.deltaValue, 0);
+  const totalSell = sells.reduce((s, t) => s + t.deltaValue, 0);
+
+  const renderRow = (t: TradeAction) => (
+    <tr
+      key={t.ticker}
+      className="border-b border-card-border/50 hover:bg-card-border/10 transition"
+    >
+      <td className="py-2 px-3">
+        <span className="font-mono font-bold text-foreground">{t.ticker}</span>
+        <span className="text-foreground/30 text-xs ml-2 hidden sm:inline">
+          {t.name}
+        </span>
+      </td>
+      <td className="py-2 px-3 text-right">
+        <span
+          className={`font-bold px-2 py-0.5 rounded text-xs ${
+            t.action === "BUY"
+              ? "bg-accent-dim text-accent"
+              : "bg-red-dim text-red"
+          }`}
+        >
+          {t.action}
+        </span>
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-sm">
+        {formatShares(t.deltaShares)} shares
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-sm">
+        <span className={t.action === "BUY" ? "text-accent" : "text-red"}>
+          {formatDollar(Math.abs(t.deltaValue))}
+        </span>
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-sm text-foreground/50">
+        {formatPct(t.currentWeight)} &rarr; {formatPct(t.targetWeight)}
+      </td>
+      <td className="py-2 px-3 text-right font-mono text-sm text-foreground/30">
+        ${t.lastPrice.toFixed(2)}
+      </td>
+    </tr>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Summary cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+        <div className="bg-card rounded-xl p-4 border border-card-border">
+          <p className="text-foreground/50 text-xs uppercase tracking-wide">
+            Portfolio
+          </p>
+          <p className="text-xl font-mono font-bold mt-1">
+            {formatDollar(result.portfolioValue)}
+          </p>
+        </div>
+        <div className="bg-card rounded-xl p-4 border border-card-border">
+          <p className="text-foreground/50 text-xs uppercase tracking-wide">
+            Total to Buy
+          </p>
+          <p className="text-xl font-mono font-bold mt-1 text-accent">
+            {formatDollar(totalBuy)}
+          </p>
+        </div>
+        <div className="bg-card rounded-xl p-4 border border-card-border">
+          <p className="text-foreground/50 text-xs uppercase tracking-wide">
+            Total to Sell
+          </p>
+          <p className="text-xl font-mono font-bold mt-1 text-red">
+            {formatDollar(Math.abs(totalSell))}
+          </p>
+        </div>
+        <div className="bg-card rounded-xl p-4 border border-card-border">
+          <p className="text-foreground/50 text-xs uppercase tracking-wide">
+            Reweight Factor
+          </p>
+          <p className="text-xl font-mono font-bold mt-1 text-yellow">
+            {result.reweightFactor.toFixed(2)}x
+          </p>
+        </div>
+      </div>
+
+      {/* Excluded holdings */}
+      {result.excludedHoldings.length > 0 && (
+        <div className="bg-card rounded-xl p-4 border border-card-border">
+          <p className="text-foreground/50 text-xs uppercase tracking-wide mb-2">
+            Excluded &amp; Reweighted Out (
+            {result.excludedHoldings.length} positions,{" "}
+            {formatPct(
+              result.excludedHoldings.reduce(
+                (s, h) => s + Math.abs(h.allocation),
+                0
+              )
+            )}{" "}
+            of original)
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {result.excludedHoldings.map((h) => (
+              <span
+                key={h.ticker}
+                className="px-2 py-1 bg-red-dim text-red rounded text-xs font-mono"
+                title={`${h.name}: ${formatPct(h.allocation)}`}
+              >
+                {h.cleanTicker} ({formatPct(h.allocation)})
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Trade list */}
+      <div className="bg-card rounded-xl border border-card-border overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-card-border text-foreground/40 text-xs uppercase tracking-wide">
+                <th className="text-left py-3 px-3">Ticker</th>
+                <th className="text-right py-3 px-3">Action</th>
+                <th className="text-right py-3 px-3">Shares</th>
+                <th className="text-right py-3 px-3">Amount</th>
+                <th className="text-right py-3 px-3">Weight</th>
+                <th className="text-right py-3 px-3">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buys.length > 0 && (
+                <>
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-2 px-3 text-accent text-xs font-bold uppercase tracking-widest bg-accent-dim/30"
+                    >
+                      Buys ({buys.length})
+                    </td>
+                  </tr>
+                  {buys.map(renderRow)}
+                </>
+              )}
+              {sells.length > 0 && (
+                <>
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-2 px-3 text-red text-xs font-bold uppercase tracking-widest bg-red-dim/30"
+                    >
+                      Sells ({sells.length})
+                    </td>
+                  </tr>
+                  {sells.map(renderRow)}
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {result.trades.length === 0 && (
+        <div className="text-center py-12 text-foreground/30">
+          <p className="text-lg">
+            No trades needed - you&apos;re already balanced!
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Main Page
+export default function Home() {
+  const [step, setStep] = useState(1);
+  const [groupHoldings, setGroupHoldings] = useState<GroupHolding[]>([]);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [portfolioValue, setPortfolioValue] = useState("");
+  const [rhHoldings, setRhHoldings] = useState<RobinhoodHolding[]>([]);
+
+  const handleGroupParsed = useCallback((holdings: GroupHolding[]) => {
+    setGroupHoldings(holdings);
+    setStep(2);
+  }, []);
+
+  const toggleExcluded = useCallback((ticker: string) => {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticker)) next.delete(ticker);
+      else next.add(ticker);
+      return next;
+    });
+  }, []);
+
+  const result: RebalanceResult | null = useMemo(() => {
+    const pv = parseFloat(portfolioValue);
+    if (groupHoldings.length === 0 || !pv || pv <= 0) return null;
+    return rebalance(groupHoldings, rhHoldings, pv, excluded);
+  }, [groupHoldings, rhHoldings, portfolioValue, excluded]);
+
+  const longCount = groupHoldings.filter((h) => h.isLong).length;
+  const baskets = [...new Set(groupHoldings.map((h) => h.basket))];
+
+  return (
+    <main className="min-h-screen">
+      {/* Header */}
+      <header className="border-b border-card-border bg-card/50">
+        <div className="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              Citrini Tracker
+            </h1>
+            <p className="text-foreground/40 text-sm mt-0.5">
+              Portfolio Rebalancer for Robinhood
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <StepIndicator step={1} currentStep={step} />
+            <div className="w-8 h-px bg-card-border" />
+            <StepIndicator step={2} currentStep={step} />
+            <div className="w-8 h-px bg-card-border" />
+            <StepIndicator step={3} currentStep={step} />
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+        {/* Step 1: Upload */}
+        <section className="bg-card rounded-2xl border border-card-border p-6">
+          <h2 className="text-lg font-bold mb-1">
+            Step 1: Upload Group Holdings
+          </h2>
+          <p className="text-foreground/40 text-sm mb-4">
+            Upload the .xlsx spreadsheet from your investing group
+          </p>
+          <FileUpload onParsed={handleGroupParsed} />
+          {groupHoldings.length > 0 && (
+            <div className="mt-4 flex gap-4 text-sm text-foreground/50">
+              <span>
+                <strong className="text-foreground">
+                  {groupHoldings.length}
+                </strong>{" "}
+                positions parsed
+              </span>
+              <span>
+                <strong className="text-foreground">{longCount}</strong> long
+              </span>
+              <span>
+                <strong className="text-foreground">{baskets.length}</strong>{" "}
+                baskets
+              </span>
+            </div>
+          )}
+        </section>
+
+        {/* Step 2: Configure */}
+        {step >= 2 && (
+          <section className="bg-card rounded-2xl border border-card-border p-6">
+            <h2 className="text-lg font-bold mb-1">
+              Step 2: Your Robinhood Portfolio
+            </h2>
+            <p className="text-foreground/40 text-sm mb-4">
+              Enter your portfolio value and current holdings. Stocks not on
+              Robinhood are auto-excluded and their weight is redistributed.
+            </p>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <RobinhoodInput
+                portfolioValue={portfolioValue}
+                setPortfolioValue={setPortfolioValue}
+                holdings={rhHoldings}
+                setHoldings={setRhHoldings}
+              />
+              <ExclusionManager
+                holdings={groupHoldings}
+                excluded={excluded}
+                onToggle={toggleExcluded}
+              />
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setStep(3)}
+                disabled={!portfolioValue || parseFloat(portfolioValue) <= 0}
+                className="px-6 py-3 bg-accent text-background font-bold rounded-xl text-sm hover:bg-accent/80 transition disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                Calculate Trades
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* Step 3: Results */}
+        {step >= 3 && result && (
+          <section className="bg-card rounded-2xl border border-card-border p-6">
+            <h2 className="text-lg font-bold mb-1">Step 3: Trade Actions</h2>
+            <p className="text-foreground/40 text-sm mb-4">
+              Here&apos;s what you need to buy and sell to match the group
+              portfolio. Non-Robinhood stocks have been excluded and weights
+              redistributed proportionally.
+            </p>
+            <TradeTable result={result} />
+          </section>
+        )}
+      </div>
+
+      {/* Footer */}
+      <footer className="border-t border-card-border mt-auto">
+        <div className="max-w-6xl mx-auto px-6 py-4 text-center text-foreground/20 text-xs">
+          Citrini Tracker &mdash; Not financial advice. Always verify trades
+          before executing.
+        </div>
+      </footer>
+    </main>
+  );
+}
