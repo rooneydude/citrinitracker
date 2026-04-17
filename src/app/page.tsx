@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { usePlaidLink } from "react-plaid-link";
 import { parseGroupHoldings } from "@/lib/parseSpreadsheet";
 import { parseRobinhoodCSV } from "@/lib/parseRobinhoodCSV";
 import { rebalance, isAvailableOnRobinhood } from "@/lib/rebalance";
@@ -9,6 +10,7 @@ import {
   RobinhoodHolding,
   RebalanceResult,
   TradeAction,
+  PlaidHoldingsResponse,
 } from "@/lib/types";
 
 function formatDollar(n: number): string {
@@ -206,6 +208,85 @@ function ExclusionManager({
   );
 }
 
+// Plaid Connect Button
+function PlaidConnectButton({
+  onSuccess,
+}: {
+  onSuccess: (data: PlaidHoldingsResponse) => void;
+}) {
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/plaid/create-link-token", { method: "POST" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) {
+          if (data.link_token) setLinkToken(data.link_token);
+          else setError(data.error || "Could not initialize Plaid");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("Could not connect to server");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess: async (publicToken) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/plaid/exchange-and-fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ public_token: publicToken }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          setError(data.error);
+        } else {
+          onSuccess(data as PlaidHoldingsResponse);
+        }
+      } catch {
+        setError("Failed to fetch holdings from Robinhood");
+      } finally {
+        setLoading(false);
+      }
+    },
+  });
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-red/30 bg-red-dim p-4 text-center">
+        <p className="text-red text-sm">{error}</p>
+        <p className="text-foreground/40 text-xs mt-1">
+          Use manual entry below instead
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => open()}
+      disabled={!ready || loading}
+      className="w-full py-3 px-4 bg-accent text-background font-bold rounded-xl text-sm hover:bg-accent/80 transition disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      {loading
+        ? "Fetching holdings..."
+        : linkToken
+        ? "Connect Robinhood via Plaid"
+        : "Initializing..."}
+    </button>
+  );
+}
+
 // Robinhood Input
 function RobinhoodInput({
   portfolioValue,
@@ -222,6 +303,18 @@ function RobinhoodInput({
   const [manualTicker, setManualTicker] = useState("");
   const [manualShares, setManualShares] = useState("");
   const [manualPrice, setManualPrice] = useState("");
+  const [plaidConnected, setPlaidConnected] = useState(false);
+
+  const handlePlaidSuccess = useCallback(
+    (data: PlaidHoldingsResponse) => {
+      setHoldings(data.holdings);
+      if (data.portfolioValue > 0) {
+        setPortfolioValue(data.portfolioValue.toFixed(2));
+      }
+      setPlaidConnected(true);
+    },
+    [setHoldings, setPortfolioValue]
+  );
 
   const handleCSVPaste = () => {
     const parsed = parseRobinhoodCSV(csvText);
@@ -258,6 +351,38 @@ function RobinhoodInput({
 
   return (
     <div className="space-y-6">
+      {/* Plaid auto-connect */}
+      {!plaidConnected ? (
+        <div>
+          <label className="block text-sm font-semibold text-foreground/70 mb-2">
+            Auto-Import from Robinhood
+          </label>
+          <PlaidConnectButton onSuccess={handlePlaidSuccess} />
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-card-border" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="bg-card px-3 text-foreground/30 text-xs uppercase">
+                or enter manually
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-accent/30 bg-accent-dim p-3 flex items-center justify-between">
+          <span className="text-accent text-sm font-semibold">
+            Robinhood connected via Plaid
+          </span>
+          <button
+            onClick={() => setPlaidConnected(false)}
+            className="text-foreground/40 text-xs hover:text-foreground/60"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
+
       <div>
         <label className="block text-sm font-semibold text-foreground/70 mb-2">
           Total Portfolio Value ($)
@@ -547,6 +672,50 @@ function TradeTable({ result }: { result: RebalanceResult }) {
   );
 }
 
+// Simplified Trade Action List
+function TradeActionList({ trades }: { trades: TradeAction[] }) {
+  const [copied, setCopied] = useState(false);
+
+  const lines = trades.map((t, i) => {
+    const absShares = Math.abs(t.deltaShares);
+    const shareStr = absShares < 1 ? absShares.toFixed(4) : absShares.toFixed(2);
+    const dollarStr = formatDollar(Math.abs(t.deltaValue));
+    if (t.action === "SELL" && t.targetWeight === 0) {
+      return `${i + 1}. SELL ALL ${t.ticker} — ${shareStr} shares (~${dollarStr})`;
+    }
+    return `${i + 1}. ${t.action} ${shareStr} shares of ${t.ticker} (~${dollarStr})`;
+  });
+
+  const text = lines.join("\n");
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (trades.length === 0) return null;
+
+  return (
+    <div className="bg-card rounded-xl border border-card-border p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-bold text-foreground/60 uppercase tracking-wide">
+          Quick Trade List
+        </h3>
+        <button
+          onClick={handleCopy}
+          className="px-3 py-1.5 bg-accent-dim text-accent text-xs font-semibold rounded-lg hover:bg-accent/20 transition"
+        >
+          {copied ? "Copied!" : "Copy to Clipboard"}
+        </button>
+      </div>
+      <pre className="text-sm font-mono text-foreground/80 whitespace-pre-wrap leading-relaxed">
+        {text}
+      </pre>
+    </div>
+  );
+}
+
 // Main Page
 export default function Home() {
   const [step, setStep] = useState(1);
@@ -676,6 +845,7 @@ export default function Home() {
               portfolio. Non-Robinhood stocks have been excluded and weights
               redistributed proportionally.
             </p>
+            <TradeActionList trades={result.trades} />
             <TradeTable result={result} />
           </section>
         )}

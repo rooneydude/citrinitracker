@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Citrini Tracker
+
+A portfolio rebalancer that lets you mirror a group's holdings on Robinhood.
+
+1. **Upload** the group holdings `.xlsx`.
+2. **Connect** Robinhood via Plaid (or paste a CSV / enter holdings manually).
+3. **Get** a BUY/SELL trade list, with non-Robinhood stocks auto-excluded and their weight redistributed.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The Plaid auto-import flow needs credentials from the [Plaid dashboard](https://dashboard.plaid.com/). Create a `.env.local` in the project root:
 
-## Learn More
+```bash
+# Required for the Plaid auto-import flow
+PLAID_CLIENT_ID=your_client_id
+PLAID_SECRET=your_sandbox_or_production_secret
 
-To learn more about Next.js, take a look at the following resources:
+# Optional. "sandbox" (default) or "production". The legacy "development"
+# environment was removed in plaid v41+.
+PLAID_ENV=sandbox
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+If these are unset, the "Connect Robinhood via Plaid" button will surface a
+friendly error and users can still fall back to CSV paste or manual entry.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
+| Command         | What it does                  |
+| --------------- | ----------------------------- |
+| `npm run dev`   | Start the dev server          |
+| `npm run build` | Production build              |
+| `npm run start` | Serve the production build    |
+| `npm run lint`  | Run ESLint                    |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploying
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The app is configured for Railway (`next.config.ts` uses `output: "standalone"`), but it also deploys cleanly to Vercel with zero config. Just set the `PLAID_*` env vars in the platform's dashboard.
+
+## Notes
+
+- Plaid's sandbox returns generic brokerage data, not real Robinhood positions — use a Plaid **production** secret and the real Robinhood institution to see live holdings.
+- This is not financial advice. Always verify trades before executing.

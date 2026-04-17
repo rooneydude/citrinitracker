@@ -40,6 +40,11 @@ export interface RebalanceResult {
   portfolioValue: number;
 }
 
+export interface PlaidHoldingsResponse {
+  holdings: RobinhoodHolding[];
+  portfolioValue: number;
+}
+
 // Known non-Robinhood exchanges
 export const NON_ROBINHOOD_EXCHANGES = new Set([
   "XTKS",  // Tokyo
