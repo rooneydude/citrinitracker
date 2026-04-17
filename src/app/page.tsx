@@ -21,6 +21,7 @@ const GROUP_HOLDINGS_TS_KEY = "citrini.groupHoldings.parsedAt";
 // Old v1 data is discarded by key change — drift was invisible to the user.
 const EXCLUDED_KEY = "citrini.excluded.v2";
 const FORCE_INCLUDED_KEY = "citrini.forceIncluded";
+const PORTFOLIO_VALUE_KEY = "citrini.portfolioValue";
 
 function formatTimeAgo(ts: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -929,12 +930,14 @@ export default function Home() {
     setParsedAt(null);
     setExcluded(new Set());
     setForceIncluded(new Set());
+    setPortfolioValue("");
     setStep(1);
     try {
       localStorage.removeItem(GROUP_HOLDINGS_KEY);
       localStorage.removeItem(GROUP_HOLDINGS_TS_KEY);
       localStorage.removeItem(EXCLUDED_KEY);
       localStorage.removeItem(FORCE_INCLUDED_KEY);
+      localStorage.removeItem(PORTFOLIO_VALUE_KEY);
     } catch {
       // ignore
     }
@@ -976,6 +979,11 @@ export default function Home() {
       if (forceJson) {
         const arr = JSON.parse(forceJson) as string[];
         if (Array.isArray(arr)) setForceIncluded(new Set(arr));
+      }
+      const pvRaw = localStorage.getItem(PORTFOLIO_VALUE_KEY);
+      if (pvRaw) {
+        const n = parseFloat(pvRaw);
+        if (Number.isFinite(n) && n > 0) setPortfolioValue(pvRaw);
       }
     } catch {
       // Corrupt storage — ignore and start fresh.
@@ -1024,6 +1032,21 @@ export default function Home() {
       // non-fatal
     }
   }, [forceIncluded]);
+
+  // Persist the portfolio value the user typed (Plaid also writes here
+  // whenever it auto-populates, so both paths survive a reload).
+  useEffect(() => {
+    try {
+      const n = parseFloat(portfolioValue);
+      if (Number.isFinite(n) && n > 0) {
+        localStorage.setItem(PORTFOLIO_VALUE_KEY, portfolioValue);
+      } else {
+        localStorage.removeItem(PORTFOLIO_VALUE_KEY);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [portfolioValue]);
 
   const result: RebalanceResult | null = useMemo(() => {
     const pv = parseFloat(portfolioValue);

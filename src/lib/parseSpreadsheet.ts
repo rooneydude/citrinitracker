@@ -2,10 +2,18 @@ import * as XLSX from "xlsx";
 import { GroupHolding } from "./types";
 
 function isOptionTicker(ticker: string, name: string): boolean {
-  // Options have patterns like "NVDA 7 C220 US" or names like "July 26 Calls on..."
+  // Natural-language name: "July 26 Calls on NVDA", "Puts on AAPL", etc.
   const optionNamePattern = /(calls|puts|call|put) on/i;
-  const optionTickerPattern = /\d+\s+[CP]\d+/;
-  return optionNamePattern.test(name) || optionTickerPattern.test(ticker);
+  // Bloomberg option ticker: "NVDA 7 C220 US" — space-separated C/P + strike.
+  const optionBloombergPattern = /\d+\s+[CP]\d+/;
+  // OCC option symbol: "NVDA240119C00500000" — no spaces, date + C/P + strike
+  // padded to 8 digits. Matches underlying + 6-digit YYMMDD + C|P + 8 digits.
+  const optionOccPattern = /^[A-Z.]{1,6}\d{6}[CP]\d{8}$/;
+  return (
+    optionNamePattern.test(name) ||
+    optionBloombergPattern.test(ticker) ||
+    optionOccPattern.test(ticker.trim())
+  );
 }
 
 function cleanTicker(ticker: string): string {
@@ -14,8 +22,9 @@ function cleanTicker(ticker: string): string {
   const trimmed = ticker.trim();
   const firstSpace = trimmed.indexOf(" ");
   const symbol = firstSpace > 0 ? trimmed.slice(0, firstSpace) : trimmed;
-  // Bloomberg uses "/" for share classes; Robinhood uses ".". e.g. MOG/A -> MOG.A
-  return symbol.replace(/\//g, ".");
+  // Normalize share-class separators to ".". Bloomberg uses "/", some CSV
+  // sources use "-", Robinhood/Plaid use ".". e.g. MOG/A, BRK-B -> MOG.A, BRK.B.
+  return symbol.replace(/[/-]/g, ".");
 }
 
 function isBlank(v: unknown): boolean {

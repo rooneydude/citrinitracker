@@ -187,6 +187,16 @@ describe("parseGroupHoldings", () => {
     expect(holdings[1].cleanTicker).toBe("BRK.B");
   });
 
+  it("also normalizes dash share-class separators (BRK-B -> BRK.B)", () => {
+    const buf = buildXlsx([
+      basketHeader("Defense"),
+      // Some non-Bloomberg sources write share classes with a dash.
+      stockRow("BRK-B", "Berkshire Hathaway B", 10),
+    ]);
+    const holdings = parseGroupHoldings(buf);
+    expect(holdings[0].cleanTicker).toBe("BRK.B");
+  });
+
   it("detects options by name pattern ('Calls on X')", () => {
     const buf = buildXlsx([
       basketHeader("Tactical"),
@@ -208,6 +218,20 @@ describe("parseGroupHoldings", () => {
 
     const holdings = parseGroupHoldings(buf);
     expect(holdings[0].isOption).toBe(true);
+  });
+
+  it("detects OCC-format option symbols (no spaces)", () => {
+    const buf = buildXlsx([
+      basketHeader("Tactical"),
+      // Canonical OCC option symbol: NVDA + 240119 (YYMMDD) + C + 00500000 (strike).
+      stockRow("NVDA240119C00500000", "NVDA Jan 2024 $500 Call", 2),
+      // Regular equity should still NOT match the OCC pattern.
+      stockRow("NVDA US Equity", "NVIDIA", 10),
+    ]);
+
+    const holdings = parseGroupHoldings(buf);
+    expect(holdings[0].isOption).toBe(true);
+    expect(holdings[1].isOption).toBe(false);
   });
 
   it("marks negative allocations as short (isLong=false)", () => {
