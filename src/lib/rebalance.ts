@@ -17,8 +17,10 @@ export function isAvailableOnRobinhood(holding: GroupHolding): boolean {
     if (ROBINHOOD_EXCHANGES.has(holding.exchange)) return true;
   }
 
-  // Ticker heuristics: foreign tickers often have non-US suffixes
-  const foreignSuffixes = /\s+(JP|TT|FP|GR|LN|HK|AU|CN|KS|SP|IT|IM|SM|SS|NO|FH|DC|BB)$/i;
+  // Ticker heuristics: foreign tickers often have non-US suffixes.
+  // Matches either end-of-string ("GLEN LN") or followed by whitespace
+  // ("GLEN LN Equity") so the full Bloomberg form works too.
+  const foreignSuffixes = /\s+(JP|TT|FP|GR|LN|HK|AU|CN|KS|SP|IT|IM|SM|SS|NO|FH|DC|BB)(\s|$)/i;
   if (foreignSuffixes.test(holding.ticker)) return false;
 
   // Numeric-only tickers are usually foreign (e.g., "5801 JP" -> "5801")
