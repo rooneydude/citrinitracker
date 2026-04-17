@@ -3,10 +3,13 @@ builder = "NIXPACKS"
 buildCommand = "npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static"
 
 [deploy]
-# Docker/Railway sets HOSTNAME to the container ID by default, which
-# Next.js 16's standalone server then binds to (instead of 0.0.0.0),
-# making the server unreachable from Railway's healthcheck. Force it.
-startCommand = "HOSTNAME=0.0.0.0 node .next/standalone/server.js"
+# NOTE: HOSTNAME=0.0.0.0 must be set as a Railway env var (not inline
+# here), because Railpack does not invoke startCommand through a shell,
+# so `ENV=val cmd` prefix syntax is interpreted as a literal program
+# name. Without this, Docker's default HOSTNAME=<container-id> leaks
+# through and Next.js 16 standalone binds to that hostname instead of
+# 0.0.0.0, failing Railway's healthcheck.
+startCommand = "node .next/standalone/server.js"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
