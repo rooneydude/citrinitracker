@@ -46,16 +46,8 @@ export function rebalance(
     }
   }
 
-  // Calculate total allocation of available long and short separately
-  const availableLongAlloc = available
-    .filter((h) => h.isLong)
-    .reduce((sum, h) => sum + h.allocation, 0);
-  const excludedLongAlloc = excluded
-    .filter((h) => h.isLong)
-    .reduce((sum, h) => sum + h.allocation, 0);
-
-  // For shorts: Robinhood doesn't support shorting stocks directly
-  // We'll only include long positions and reweight those
+  // Robinhood doesn't support shorting stocks directly, so we only include
+  // long positions and reweight those to fill 100%.
   const longHoldings = available.filter((h) => h.isLong);
   const totalLongAlloc = longHoldings.reduce((sum, h) => sum + h.allocation, 0);
 
