@@ -34,35 +34,62 @@ export async function POST(request: Request) {
 
     const securitiesMap = new Map(securities.map((s) => [s.security_id, s]));
 
-    // Sum the value of investment accounts. Prefer `current`, fall back to
-    // `available` (some brokerages don't populate current for equities).
+    // Plaid uses both "investment" and "brokerage" account types; accept both.
+    const INVESTMENT_TYPES = new Set(["investment", "brokerage"]);
+
+    // Sum the value of investment/brokerage accounts. Prefer `current`, fall
+    // back to `available` (some brokerages don't populate current for equities).
     const portfolioValue = accounts.reduce((sum, acct) => {
-      if (acct.type !== "investment") return sum;
+      if (!INVESTMENT_TYPES.has(acct.type)) return sum;
       const bal = acct.balances.current ?? acct.balances.available ?? 0;
       return sum + bal;
     }, 0);
 
-    const rhHoldings: RobinhoodHolding[] = holdings
-      .map((h) => {
-        const security = securitiesMap.get(h.security_id);
-        if (!security) return null;
+    // Only keep security types Robinhood can actually trade through this flow.
+    // Mutual funds, fixed income, cash, crypto, options/derivatives, and
+    // untyped holdings (CUSIPs without a ticker) are intentionally excluded.
+    const TRADEABLE_TYPES = new Set(["equity", "etf"]);
 
-        const ticker =
-          security.ticker_symbol?.toUpperCase() ?? security.name ?? "";
-        if (!ticker || ticker === "CUR:USD") return null;
+    // Real US equity/ETF tickers are 1–5 uppercase letters with an optional
+    // single-letter share-class suffix (e.g. BRK.B, BF.A). This rejects
+    // CUSIPs, option OCC codes, "U S Dollar", and other junk that Plaid
+    // sometimes classifies as equity in sandbox and real data alike.
+    const TICKER_PATTERN = /^[A-Z]{1,5}(\.[A-Z])?$/;
 
-        const shares = h.quantity;
-        const price = h.institution_price ?? security.close_price ?? 0;
-        const value = h.institution_value ?? shares * price;
+    // Aggregate by ticker so a security appearing in multiple accounts collapses
+    // into a single row (and avoids duplicate React keys).
+    const byTicker = new Map<string, RobinhoodHolding>();
 
-        return {
+    for (const h of holdings) {
+      const security = securitiesMap.get(h.security_id);
+      if (!security) continue;
+      if (!security.type || !TRADEABLE_TYPES.has(security.type)) continue;
+
+      const ticker = security.ticker_symbol?.toUpperCase();
+      if (!ticker || !TICKER_PATTERN.test(ticker)) continue;
+      if (h.quantity <= 0) continue;
+
+      const price = h.institution_price ?? security.close_price ?? 0;
+      const value = h.institution_value ?? h.quantity * price;
+
+      const existing = byTicker.get(ticker);
+      if (existing) {
+        existing.shares += h.quantity;
+        existing.marketValue += value;
+        // Keep the weighted-average price consistent with shares/value.
+        existing.currentPrice =
+          existing.shares > 0 ? existing.marketValue / existing.shares : price;
+      } else {
+        byTicker.set(ticker, {
           ticker,
-          shares,
+          shares: h.quantity,
           currentPrice: price,
           marketValue: value,
-        } satisfies RobinhoodHolding;
-      })
-      .filter((h): h is RobinhoodHolding => h !== null && h.shares > 0);
+        });
+      }
+    }
+
+    const rhHoldings: RobinhoodHolding[] = Array.from(byTicker.values());
 
     return NextResponse.json({ holdings: rhHoldings, portfolioValue });
   } catch (error: unknown) {
