@@ -15,6 +15,20 @@ import {
 } from "@/lib/types";
 
 const PLAID_TOKEN_KEY = "citrini.plaid.access_token";
+const GROUP_HOLDINGS_KEY = "citrini.groupHoldings";
+const GROUP_HOLDINGS_TS_KEY = "citrini.groupHoldings.parsedAt";
+const EXCLUDED_KEY = "citrini.excluded";
+
+function formatTimeAgo(ts: number): string {
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return "just now";
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
+  const day = Math.floor(hr / 24);
+  return `${day} day${day === 1 ? "" : "s"} ago`;
+}
 
 function formatDollar(n: number): string {
   const abs = Math.abs(n);
@@ -820,12 +834,20 @@ function TradeActionList({ trades }: { trades: TradeAction[] }) {
 export default function Home() {
   const [step, setStep] = useState(1);
   const [groupHoldings, setGroupHoldings] = useState<GroupHolding[]>([]);
+  const [parsedAt, setParsedAt] = useState<number | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [portfolioValue, setPortfolioValue] = useState("");
   const [rhHoldings, setRhHoldings] = useState<RobinhoodHolding[]>([]);
 
   const handleGroupParsed = useCallback((holdings: GroupHolding[]) => {
     setGroupHoldings(holdings);
+    const now = Date.now();
+    setParsedAt(now);
+    try {
+      localStorage.setItem(GROUP_HOLDINGS_TS_KEY, String(now));
+    } catch {
+      // localStorage can throw in private mode; non-fatal.
+    }
     setStep(2);
   }, []);
 
@@ -837,6 +859,84 @@ export default function Home() {
       return next;
     });
   }, []);
+
+  const clearGroupHoldings = useCallback(() => {
+    setGroupHoldings([]);
+    setParsedAt(null);
+    setExcluded(new Set());
+    setStep(1);
+    try {
+      localStorage.removeItem(GROUP_HOLDINGS_KEY);
+      localStorage.removeItem(GROUP_HOLDINGS_TS_KEY);
+      localStorage.removeItem(EXCLUDED_KEY);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Restore persisted state on mount. Ref guard for React Strict Mode
+  // double-mount (which would also fire this effect twice).
+  //
+  // The react-hooks/set-state-in-effect rule warns against setState in an
+  // effect body because it can cascade renders. Here it's fine: we fire
+  // exactly once on mount to hydrate initial state from localStorage, and
+  // can't use a lazy useState initializer because localStorage is not
+  // available during SSR. This is the same pattern used for Plaid below.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    try {
+      const holdingsJson = localStorage.getItem(GROUP_HOLDINGS_KEY);
+      if (holdingsJson) {
+        const parsed = JSON.parse(holdingsJson) as GroupHolding[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setGroupHoldings(parsed);
+          setStep(2);
+        }
+      }
+      const tsRaw = localStorage.getItem(GROUP_HOLDINGS_TS_KEY);
+      if (tsRaw) {
+        const ts = Number(tsRaw);
+        if (Number.isFinite(ts) && ts > 0) setParsedAt(ts);
+      }
+      const excludedJson = localStorage.getItem(EXCLUDED_KEY);
+      if (excludedJson) {
+        const arr = JSON.parse(excludedJson) as string[];
+        if (Array.isArray(arr)) setExcluded(new Set(arr));
+      }
+    } catch {
+      // Corrupt storage — ignore and start fresh.
+    }
+  }, []);
+
+  // Persist group holdings whenever they change. Clear when emptied.
+  useEffect(() => {
+    try {
+      if (groupHoldings.length > 0) {
+        localStorage.setItem(GROUP_HOLDINGS_KEY, JSON.stringify(groupHoldings));
+      } else {
+        localStorage.removeItem(GROUP_HOLDINGS_KEY);
+        localStorage.removeItem(GROUP_HOLDINGS_TS_KEY);
+      }
+    } catch {
+      // quota exceeded or private mode — non-fatal
+    }
+  }, [groupHoldings]);
+
+  // Persist manual exclusions.
+  useEffect(() => {
+    try {
+      if (excluded.size > 0) {
+        localStorage.setItem(EXCLUDED_KEY, JSON.stringify([...excluded]));
+      } else {
+        localStorage.removeItem(EXCLUDED_KEY);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [excluded]);
 
   const result: RebalanceResult | null = useMemo(() => {
     const pv = parseFloat(portfolioValue);
@@ -881,20 +981,36 @@ export default function Home() {
           </p>
           <FileUpload onParsed={handleGroupParsed} />
           {groupHoldings.length > 0 && (
-            <div className="mt-4 flex gap-4 text-sm text-foreground/50">
-              <span>
-                <strong className="text-foreground">
-                  {groupHoldings.length}
-                </strong>{" "}
-                positions parsed
-              </span>
-              <span>
-                <strong className="text-foreground">{longCount}</strong> long
-              </span>
-              <span>
-                <strong className="text-foreground">{baskets.length}</strong>{" "}
-                baskets
-              </span>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2 gap-x-4 text-sm text-foreground/50">
+              <div className="flex flex-wrap gap-4">
+                <span>
+                  <strong className="text-foreground">
+                    {groupHoldings.length}
+                  </strong>{" "}
+                  positions parsed
+                </span>
+                <span>
+                  <strong className="text-foreground">{longCount}</strong> long
+                </span>
+                <span>
+                  <strong className="text-foreground">{baskets.length}</strong>{" "}
+                  baskets
+                </span>
+                {parsedAt ? (
+                  <span
+                    className="text-foreground/30"
+                    title={new Date(parsedAt).toLocaleString()}
+                  >
+                    uploaded {formatTimeAgo(parsedAt)}
+                  </span>
+                ) : null}
+              </div>
+              <button
+                onClick={clearGroupHoldings}
+                className="text-foreground/40 text-xs hover:text-red"
+              >
+                Clear
+              </button>
             </div>
           )}
         </section>
