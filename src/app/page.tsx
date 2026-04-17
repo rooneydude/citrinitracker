@@ -22,6 +22,7 @@ const GROUP_HOLDINGS_TS_KEY = "citrini.groupHoldings.parsedAt";
 const EXCLUDED_KEY = "citrini.excluded.v2";
 const FORCE_INCLUDED_KEY = "citrini.forceIncluded";
 const PORTFOLIO_VALUE_KEY = "citrini.portfolioValue";
+const PLAID_LAST_REFRESH_KEY = "citrini.plaid.lastRefreshedAt";
 
 function formatTimeAgo(ts: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -359,12 +360,25 @@ function RobinhoodInput({
   const [plaidConnected, setPlaidConnected] = useState(false);
   const [plaidRefreshing, setPlaidRefreshing] = useState(false);
   const [plaidError, setPlaidError] = useState<string | null>(null);
+  // Timestamp of the most recent *successful* Plaid fetch. Persisted so the
+  // user can always see how stale their current holdings data is, even if
+  // the current refresh attempt failed.
+  const [plaidLastRefreshedAt, setPlaidLastRefreshedAt] = useState<number | null>(
+    null
+  );
 
   const applyPlaidData = useCallback(
     (data: PlaidHoldingsResponse) => {
       setHoldings(data.holdings);
       if (data.portfolioValue > 0) {
         setPortfolioValue(data.portfolioValue.toFixed(2));
+      }
+      const now = Date.now();
+      setPlaidLastRefreshedAt(now);
+      try {
+        localStorage.setItem(PLAID_LAST_REFRESH_KEY, String(now));
+      } catch {
+        // non-fatal
       }
     },
     [setHoldings, setPortfolioValue]
@@ -419,12 +433,14 @@ function RobinhoodInput({
   const disconnectPlaid = useCallback(() => {
     try {
       localStorage.removeItem(PLAID_TOKEN_KEY);
+      localStorage.removeItem(PLAID_LAST_REFRESH_KEY);
     } catch {
       // ignore
     }
     setPlaidConnected(false);
     setHoldings([]);
     setPlaidError(null);
+    setPlaidLastRefreshedAt(null);
   }, [setHoldings]);
 
   // On mount, if we already have an access_token, auto-refresh holdings.
@@ -434,10 +450,16 @@ function RobinhoodInput({
     if (bootstrapped.current) return;
     bootstrapped.current = true;
     let token: string | null = null;
+    let lastRaw: string | null = null;
     try {
       token = localStorage.getItem(PLAID_TOKEN_KEY);
+      lastRaw = localStorage.getItem(PLAID_LAST_REFRESH_KEY);
     } catch {
       // ignore
+    }
+    if (lastRaw) {
+      const n = Number(lastRaw);
+      if (Number.isFinite(n) && n > 0) setPlaidLastRefreshedAt(n);
     }
     if (token) {
       refreshFromPlaid(token);
@@ -498,13 +520,35 @@ function RobinhoodInput({
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-accent/30 bg-accent-dim p-3 space-y-2">
+        <div
+          className={`rounded-xl border p-3 space-y-2 ${
+            plaidError
+              ? "border-red/40 bg-red-dim"
+              : "border-accent/30 bg-accent-dim"
+          }`}
+        >
           <div className="flex items-center justify-between gap-3">
-            <span className="text-accent text-sm font-semibold">
-              {plaidRefreshing
-                ? "Refreshing Robinhood holdings…"
-                : "Robinhood connected via Plaid"}
-            </span>
+            <div className="flex flex-col">
+              <span
+                className={`text-sm font-semibold ${
+                  plaidError ? "text-red" : "text-accent"
+                }`}
+              >
+                {plaidRefreshing
+                  ? "Refreshing Robinhood holdings…"
+                  : plaidError
+                    ? "Robinhood data may be stale"
+                    : "Robinhood connected via Plaid"}
+              </span>
+              {plaidLastRefreshedAt ? (
+                <span
+                  className="text-foreground/40 text-xs mt-0.5"
+                  title={new Date(plaidLastRefreshedAt).toLocaleString()}
+                >
+                  Last updated {formatTimeAgo(plaidLastRefreshedAt)}
+                </span>
+              ) : null}
+            </div>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => {
@@ -652,10 +696,16 @@ function RobinhoodInput({
 // Trade Table
 function TradeTable({ result }: { result: RebalanceResult }) {
   const buys = result.trades.filter((t) => t.action === "BUY");
-  const sells = result.trades.filter((t) => t.action === "SELL");
+  const allSells = result.trades.filter((t) => t.action === "SELL");
+  // Split SELLs: "liquidations" are current holdings not in the target (full
+  // exits), "rebalance sells" are trims of positions that ARE in the target.
+  // Grouping these separately prevents the 20+ "sell old junk" rows from
+  // burying the actual rebalance signal.
+  const liquidations = allSells.filter((t) => t.basket === "Not in target");
+  const rebalanceSells = allSells.filter((t) => t.basket !== "Not in target");
 
   const totalBuy = buys.reduce((s, t) => s + t.deltaValue, 0);
-  const totalSell = sells.reduce((s, t) => s + t.deltaValue, 0);
+  const totalSell = allSells.reduce((s, t) => s + t.deltaValue, 0);
 
   const renderRow = (t: TradeAction) => (
     <tr
@@ -790,17 +840,31 @@ function TradeTable({ result }: { result: RebalanceResult }) {
                   {buys.map(renderRow)}
                 </>
               )}
-              {sells.length > 0 && (
+              {rebalanceSells.length > 0 && (
                 <>
                   <tr>
                     <td
                       colSpan={6}
                       className="py-2 px-3 text-red text-xs font-bold uppercase tracking-widest bg-red-dim/30"
                     >
-                      Sells ({sells.length})
+                      Sells — Rebalance ({rebalanceSells.length})
                     </td>
                   </tr>
-                  {sells.map(renderRow)}
+                  {rebalanceSells.map(renderRow)}
+                </>
+              )}
+              {liquidations.length > 0 && (
+                <>
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-2 px-3 text-red text-xs font-bold uppercase tracking-widest bg-red-dim/30"
+                      title="Current holdings that are not in the target portfolio. Sell to fully exit."
+                    >
+                      Sells — Liquidate / Not in target ({liquidations.length})
+                    </td>
+                  </tr>
+                  {liquidations.map(renderRow)}
                 </>
               )}
             </tbody>
