@@ -47,6 +47,48 @@ describe("isAvailableOnRobinhood", () => {
     expect(isAvailableOnRobinhood(makeGroup({ exchange: "XHKG" }))).toBe(false);
   });
 
+  it("rejects recently-added MIC codes (Swiss, Toronto, Tel Aviv, Mexico, Brazil)", () => {
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XSWX" }))).toBe(false);
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XTSE" }))).toBe(false);
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XTAE" }))).toBe(false);
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XMEX" }))).toBe(false);
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XBSP" }))).toBe(false);
+    expect(isAvailableOnRobinhood(makeGroup({ exchange: "XJSE" }))).toBe(false);
+  });
+
+  it("rejects extended Bloomberg country suffixes (SW, CT, SJ, BZ, CH)", () => {
+    // Swiss
+    expect(
+      isAvailableOnRobinhood(
+        makeGroup({ ticker: "NESN SW Equity", cleanTicker: "NESN", exchange: "" })
+      )
+    ).toBe(false);
+    // Canada (Toronto)
+    expect(
+      isAvailableOnRobinhood(
+        makeGroup({ ticker: "SHOP CT Equity", cleanTicker: "SHOP", exchange: "" })
+      )
+    ).toBe(false);
+    // South Africa
+    expect(
+      isAvailableOnRobinhood(
+        makeGroup({ ticker: "NPN SJ Equity", cleanTicker: "NPN", exchange: "" })
+      )
+    ).toBe(false);
+    // Brazil
+    expect(
+      isAvailableOnRobinhood(
+        makeGroup({ ticker: "PETR4 BZ Equity", cleanTicker: "PETR4", exchange: "" })
+      )
+    ).toBe(false);
+    // China (ambiguous with Switzerland 'CH' but it's the Bloomberg code for China)
+    expect(
+      isAvailableOnRobinhood(
+        makeGroup({ ticker: "600519 CH Equity", cleanTicker: "600519", exchange: "" })
+      )
+    ).toBe(false);
+  });
+
   it("accepts known Robinhood exchanges (NYSE, NASDAQ, etc.)", () => {
     expect(isAvailableOnRobinhood(makeGroup({ exchange: "XNYS" }))).toBe(true);
     expect(isAvailableOnRobinhood(makeGroup({ exchange: "XNGS" }))).toBe(true);
@@ -162,8 +204,8 @@ describe("rebalance", () => {
     expect(result.trades[0].targetValue).toBeCloseTo(10_000, 6);
   });
 
-  it("honors manually-excluded tickers (by group ticker, not cleanTicker)", () => {
-    // Two targets; user manually excludes NVDA by its *original* ticker.
+  it("honors manually-excluded tickers keyed by cleanTicker (uppercase)", () => {
+    // Two targets; user manually excludes NVDA by its cleanTicker.
     const groups = [
       makeGroup({
         ticker: "NVDA US Equity",
@@ -176,17 +218,79 @@ describe("rebalance", () => {
         allocation: 50,
       }),
     ];
-    const result = rebalance(
-      groups,
-      [],
-      10_000,
-      new Set(["NVDA US Equity"])
-    );
+    const result = rebalance(groups, [], 10_000, new Set(["NVDA"]));
 
     const tradedTickers = result.trades.map((t) => t.ticker);
     expect(tradedTickers).toContain("AAPL");
     expect(tradedTickers).not.toContain("NVDA");
     expect(result.excludedHoldings.map((h) => h.cleanTicker)).toContain("NVDA");
+  });
+
+  it("excludes same cleanTicker even if it appears in multiple baskets", () => {
+    // NVDA shows up in two baskets with slightly different Bloomberg strings.
+    // One manual exclusion (by cleanTicker) should kill both.
+    const groups = [
+      makeGroup({
+        ticker: "NVDA US Equity",
+        cleanTicker: "NVDA",
+        basket: "AI",
+        allocation: 25,
+      }),
+      makeGroup({
+        ticker: "NVDA",
+        cleanTicker: "NVDA",
+        basket: "Semis",
+        allocation: 25,
+      }),
+      makeGroup({
+        ticker: "AAPL US Equity",
+        cleanTicker: "AAPL",
+        allocation: 50,
+      }),
+    ];
+    const result = rebalance(groups, [], 10_000, new Set(["NVDA"]));
+    expect(result.trades.map((t) => t.ticker)).toEqual(["AAPL"]);
+    // Both NVDA rows end up in excludedHoldings.
+    expect(
+      result.excludedHoldings.filter((h) => h.cleanTicker === "NVDA")
+    ).toHaveLength(2);
+  });
+
+  it("force-include overrides auto-exclusion (e.g. misclassified foreign heuristic)", () => {
+    // GLEN would normally be auto-excluded by exchange=XLON. Force-include it.
+    const groups = [
+      makeGroup({ cleanTicker: "NVDA", allocation: 50, exchange: "XNGS" }),
+      makeGroup({
+        ticker: "GLEN LN Equity",
+        cleanTicker: "GLEN",
+        allocation: 50,
+        exchange: "XLON",
+      }),
+    ];
+    const result = rebalance(
+      groups,
+      [],
+      10_000,
+      new Set(),
+      new Set(["GLEN"])
+    );
+    // Both are now in the universe; reweight factor should be 1.
+    expect(result.reweightFactor).toBeCloseTo(1, 6);
+    expect(result.excludedHoldings).toHaveLength(0);
+    expect(result.trades.map((t) => t.ticker).sort()).toEqual(["GLEN", "NVDA"]);
+  });
+
+  it("manual exclusion wins over force-include when both are set", () => {
+    const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+    const result = rebalance(
+      groups,
+      [],
+      10_000,
+      new Set(["NVDA"]),
+      new Set(["NVDA"])
+    );
+    expect(result.trades).toHaveLength(0);
+    expect(result.excludedHoldings).toHaveLength(1);
   });
 
   it("ignores short positions (isLong=false) when sizing longs", () => {

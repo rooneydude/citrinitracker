@@ -49,29 +49,71 @@ export interface PlaidExchangeResponse extends PlaidHoldingsResponse {
   access_token: string;
 }
 
-// Known non-Robinhood exchanges
+// Known non-Robinhood exchanges. MIC (ISO 10383) codes.
+// Robinhood only supports US-listed securities (NYSE/NASDAQ/ARCA/BATS/AMEX);
+// every entry below is a venue RH cannot route to.
 export const NON_ROBINHOOD_EXCHANGES = new Set([
+  // Asia-Pacific
   "XTKS",  // Tokyo
   "XTAI",  // Taiwan
+  "XHKG",  // Hong Kong
+  "XSHE",  // Shenzhen
+  "XSHG",  // Shanghai
+  "XKRX",  // Korea
+  "XASX",  // Australia (ASX)
+  "XSES",  // Singapore
+  "XBOM",  // Bombay
+  "XNSE",  // India NSE
+  "XKLS",  // Malaysia
+  "XBKK",  // Thailand
+  "XIDX",  // Indonesia
+  "XPHS",  // Philippines
+  "XHNX",  // Vietnam (Hanoi)
+  "XSTC",  // Vietnam (Ho Chi Minh)
+  "XNZE",  // New Zealand
+  // Europe
   "XPAR",  // Paris
   "XLON",  // London
-  "XHKG",  // Hong Kong
-  "XASX",  // Australia
   "XFRA",  // Frankfurt
   "XETR",  // Xetra (Germany)
   "XAMS",  // Amsterdam
   "XBRU",  // Brussels
-  "XMIL",  // Milan
+  "XMIL",  // Milan (Borsa Italiana)
   "XMAD",  // Madrid
   "XSTO",  // Stockholm
   "XHEL",  // Helsinki
   "XOSL",  // Oslo
-  "XKRX",  // Korea
-  "XSES",  // Singapore
-  "XBOM",  // Bombay
-  "XNSE",  // India NSE
-  "XSHE",  // Shenzhen
-  "XSHG",  // Shanghai
+  "XCSE",  // Copenhagen
+  "XICE",  // Iceland
+  "XSWX",  // Swiss Exchange (SIX)
+  "XVTX",  // SIX Swiss blue chips
+  "XWAR",  // Warsaw
+  "XBUD",  // Budapest
+  "XPRA",  // Prague
+  "XWBO",  // Vienna
+  "XATH",  // Athens
+  "XIST",  // Istanbul
+  "XLIS",  // Lisbon
+  "XDUB",  // Dublin
+  "XMOS",  // Moscow
+  // Americas (ex-US)
+  "XTSE",  // Toronto
+  "XTSX",  // TSX Venture
+  "XCNQ",  // Canadian Securities Exchange
+  "XMEX",  // Mexico
+  "XBSP",  // B3 São Paulo
+  "XSGO",  // Santiago
+  "XBUE",  // Buenos Aires
+  "XBOG",  // Colombia
+  // Middle East & Africa
+  "XTAE",  // Tel Aviv
+  "XJSE",  // Johannesburg
+  "XDFM",  // Dubai
+  "XADS",  // Abu Dhabi
+  "XSAU",  // Saudi (Tadawul)
+  "XKSE",  // Kuwait
+  "XBAH",  // Bahrain
+  "XDOH",  // Qatar
 ]);
 
 // Robinhood-compatible US exchanges

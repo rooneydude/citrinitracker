@@ -17,10 +17,15 @@ export function isAvailableOnRobinhood(holding: GroupHolding): boolean {
     if (ROBINHOOD_EXCHANGES.has(holding.exchange)) return true;
   }
 
-  // Ticker heuristics: foreign tickers often have non-US suffixes.
-  // Matches either end-of-string ("GLEN LN") or followed by whitespace
+  // Ticker heuristics: foreign tickers often have non-US Bloomberg country
+  // codes. Matches either end-of-string ("GLEN LN") or followed by whitespace
   // ("GLEN LN Equity") so the full Bloomberg form works too.
-  const foreignSuffixes = /\s+(JP|TT|FP|GR|LN|HK|AU|CN|KS|SP|IT|IM|SM|SS|NO|FH|DC|BB)(\s|$)/i;
+  //
+  // The list below is the set of 2-letter Bloomberg country codes for venues
+  // Robinhood cannot trade. Not exhaustive but covers the common cases.
+  // NOTE: `CN` is Bloomberg-for-Canada (not China); Chinese codes are `CH`.
+  const foreignSuffixes =
+    /\s+(JP|TT|FP|GR|LN|HK|AU|CN|CT|KS|SP|IT|IM|SM|SS|NO|FH|DC|BB|SW|VX|SJ|TB|PM|VN|IJ|MK|NZ|TI|PW|AV|BZ|MM|AR|CI|CB|CH|RU|IN|KK|EY|PL|HB|ID|EG|UH|QD)(\s|$)/i;
   if (foreignSuffixes.test(holding.ticker)) return false;
 
   // Numeric-only tickers are usually foreign (e.g., "5801 JP" -> "5801")
@@ -34,14 +39,34 @@ export function rebalance(
   groupHoldings: GroupHolding[],
   robinhoodHoldings: RobinhoodHolding[],
   portfolioValue: number,
-  excludedTickers: Set<string> // manually excluded tickers
+  /**
+   * Manually-excluded cleanTickers (UPPERCASE). These force a reject even if
+   * the Robinhood-availability heuristic says yes.
+   */
+  excludedCleanTickers: Set<string>,
+  /**
+   * Force-included cleanTickers (UPPERCASE). These override a heuristic-based
+   * auto-exclusion — e.g. a valid US stock the heuristic misclassified.
+   * Manual exclusion still wins over force-include.
+   */
+  forceIncludedCleanTickers: Set<string> = new Set()
 ): RebalanceResult {
-  // Separate available vs excluded holdings
+  // Separate available vs excluded holdings.
+  //
+  // Precedence (highest → lowest):
+  //   1. manual exclusion  → always excluded
+  //   2. force-include     → always included
+  //   3. heuristic         → default
   const available: GroupHolding[] = [];
   const excluded: GroupHolding[] = [];
 
   for (const h of groupHoldings) {
-    if (excludedTickers.has(h.ticker) || !isAvailableOnRobinhood(h)) {
+    const ct = h.cleanTicker.toUpperCase();
+    if (excludedCleanTickers.has(ct)) {
+      excluded.push(h);
+    } else if (forceIncludedCleanTickers.has(ct)) {
+      available.push(h);
+    } else if (!isAvailableOnRobinhood(h)) {
       excluded.push(h);
     } else {
       available.push(h);

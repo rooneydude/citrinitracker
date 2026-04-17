@@ -17,7 +17,10 @@ import {
 const PLAID_TOKEN_KEY = "citrini.plaid.access_token";
 const GROUP_HOLDINGS_KEY = "citrini.groupHoldings";
 const GROUP_HOLDINGS_TS_KEY = "citrini.groupHoldings.parsedAt";
-const EXCLUDED_KEY = "citrini.excluded";
+// v2: keys are cleanTicker.toUpperCase() (was raw Bloomberg `h.ticker` in v1).
+// Old v1 data is discarded by key change — drift was invisible to the user.
+const EXCLUDED_KEY = "citrini.excluded.v2";
+const FORCE_INCLUDED_KEY = "citrini.forceIncluded";
 
 function formatTimeAgo(ts: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -165,14 +168,26 @@ function FileUpload({
 function ExclusionManager({
   holdings,
   excluded,
-  onToggle,
+  forceIncluded,
+  onToggleExclude,
+  onToggleForceInclude,
 }: {
   holdings: GroupHolding[];
   excluded: Set<string>;
-  onToggle: (ticker: string) => void;
+  forceIncluded: Set<string>;
+  onToggleExclude: (cleanTicker: string) => void;
+  onToggleForceInclude: (cleanTicker: string) => void;
 }) {
-  const autoExcluded = holdings.filter((h) => !isAvailableOnRobinhood(h));
-  const available = holdings.filter((h) => isAvailableOnRobinhood(h));
+  // Partition in a single pass (instead of filtering twice per render).
+  const { autoExcluded, available } = useMemo(() => {
+    const auto: GroupHolding[] = [];
+    const avail: GroupHolding[] = [];
+    for (const h of holdings) {
+      if (isAvailableOnRobinhood(h)) avail.push(h);
+      else auto.push(h);
+    }
+    return { autoExcluded: auto, available: avail };
+  }, [holdings]);
 
   return (
     <div className="space-y-4">
@@ -180,17 +195,33 @@ function ExclusionManager({
         <div>
           <h4 className="text-sm font-semibold text-foreground/60 uppercase tracking-wide mb-2">
             Auto-excluded (not on Robinhood)
+            <span className="text-foreground/30 font-normal ml-2">
+              (click to force-include)
+            </span>
           </h4>
           <div className="flex flex-wrap gap-2">
-            {autoExcluded.map((h) => (
-              <span
-                key={`${h.basket}:${h.ticker}`}
-                className="px-3 py-1 rounded-full bg-red-dim text-red text-xs font-mono"
-                title={`${h.name} - ${h.exchange || "Unknown exchange"}`}
-              >
-                {h.cleanTicker}
-              </span>
-            ))}
+            {autoExcluded.map((h) => {
+              const ct = h.cleanTicker.toUpperCase();
+              const isForced = forceIncluded.has(ct);
+              return (
+                <button
+                  key={`${h.basket}:${h.ticker}`}
+                  onClick={() => onToggleForceInclude(ct)}
+                  className={`px-3 py-1 rounded-full text-xs font-mono transition-all ${
+                    isForced
+                      ? "bg-accent-dim text-accent ring-1 ring-accent/40"
+                      : "bg-red-dim text-red line-through hover:bg-red/20"
+                  }`}
+                  title={
+                    isForced
+                      ? `${h.name} — forced on (heuristic said not on RH)`
+                      : `${h.name} - ${h.exchange || "Unknown exchange"} (click to override)`
+                  }
+                >
+                  {h.cleanTicker}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -203,11 +234,12 @@ function ExclusionManager({
         </h4>
         <div className="flex flex-wrap gap-2">
           {available.map((h) => {
-            const isExcluded = excluded.has(h.ticker);
+            const ct = h.cleanTicker.toUpperCase();
+            const isExcluded = excluded.has(ct);
             return (
               <button
                 key={`${h.basket}:${h.ticker}`}
-                onClick={() => onToggle(h.ticker)}
+                onClick={() => onToggleExclude(ct)}
                 className={`px-3 py-1 rounded-full text-xs font-mono transition-all ${
                   isExcluded
                     ? "bg-red-dim text-red line-through opacity-60"
@@ -835,7 +867,11 @@ export default function Home() {
   const [step, setStep] = useState(1);
   const [groupHoldings, setGroupHoldings] = useState<GroupHolding[]>([]);
   const [parsedAt, setParsedAt] = useState<number | null>(null);
+  // All exclusion state is keyed by cleanTicker.toUpperCase() so that the
+  // same underlying symbol is treated consistently across baskets, Plaid
+  // current-holdings lookup, and the rebalance engine.
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [forceIncluded, setForceIncluded] = useState<Set<string>>(new Set());
   const [portfolioValue, setPortfolioValue] = useState("");
   const [rhHoldings, setRhHoldings] = useState<RobinhoodHolding[]>([]);
 
@@ -848,14 +884,42 @@ export default function Home() {
     } catch {
       // localStorage can throw in private mode; non-fatal.
     }
+    // Prune any persisted exclusion/override entries for tickers that no
+    // longer exist in the freshly-uploaded sheet — otherwise cruft from old
+    // sheets silently accumulates in localStorage.
+    const validTickers = new Set(
+      holdings.map((h) => h.cleanTicker.toUpperCase())
+    );
+    setExcluded((prev) => {
+      const next = new Set<string>();
+      for (const t of prev) if (validTickers.has(t)) next.add(t);
+      return next;
+    });
+    setForceIncluded((prev) => {
+      const next = new Set<string>();
+      for (const t of prev) if (validTickers.has(t)) next.add(t);
+      return next;
+    });
     setStep(2);
   }, []);
 
-  const toggleExcluded = useCallback((ticker: string) => {
+  // Toggle manual exclusion. `cleanTicker` already normalized to UPPERCASE
+  // by the caller.
+  const toggleExcluded = useCallback((cleanTicker: string) => {
     setExcluded((prev) => {
       const next = new Set(prev);
-      if (next.has(ticker)) next.delete(ticker);
-      else next.add(ticker);
+      if (next.has(cleanTicker)) next.delete(cleanTicker);
+      else next.add(cleanTicker);
+      return next;
+    });
+  }, []);
+
+  // Toggle force-include (overrides the auto-exclusion heuristic).
+  const toggleForceIncluded = useCallback((cleanTicker: string) => {
+    setForceIncluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(cleanTicker)) next.delete(cleanTicker);
+      else next.add(cleanTicker);
       return next;
     });
   }, []);
@@ -864,11 +928,13 @@ export default function Home() {
     setGroupHoldings([]);
     setParsedAt(null);
     setExcluded(new Set());
+    setForceIncluded(new Set());
     setStep(1);
     try {
       localStorage.removeItem(GROUP_HOLDINGS_KEY);
       localStorage.removeItem(GROUP_HOLDINGS_TS_KEY);
       localStorage.removeItem(EXCLUDED_KEY);
+      localStorage.removeItem(FORCE_INCLUDED_KEY);
     } catch {
       // ignore
     }
@@ -906,6 +972,11 @@ export default function Home() {
         const arr = JSON.parse(excludedJson) as string[];
         if (Array.isArray(arr)) setExcluded(new Set(arr));
       }
+      const forceJson = localStorage.getItem(FORCE_INCLUDED_KEY);
+      if (forceJson) {
+        const arr = JSON.parse(forceJson) as string[];
+        if (Array.isArray(arr)) setForceIncluded(new Set(arr));
+      }
     } catch {
       // Corrupt storage — ignore and start fresh.
     }
@@ -938,11 +1009,27 @@ export default function Home() {
     }
   }, [excluded]);
 
+  // Persist force-include overrides.
+  useEffect(() => {
+    try {
+      if (forceIncluded.size > 0) {
+        localStorage.setItem(
+          FORCE_INCLUDED_KEY,
+          JSON.stringify([...forceIncluded])
+        );
+      } else {
+        localStorage.removeItem(FORCE_INCLUDED_KEY);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [forceIncluded]);
+
   const result: RebalanceResult | null = useMemo(() => {
     const pv = parseFloat(portfolioValue);
     if (groupHoldings.length === 0 || !pv || pv <= 0) return null;
-    return rebalance(groupHoldings, rhHoldings, pv, excluded);
-  }, [groupHoldings, rhHoldings, portfolioValue, excluded]);
+    return rebalance(groupHoldings, rhHoldings, pv, excluded, forceIncluded);
+  }, [groupHoldings, rhHoldings, portfolioValue, excluded, forceIncluded]);
 
   const longCount = groupHoldings.filter((h) => h.isLong).length;
   const baskets = [...new Set(groupHoldings.map((h) => h.basket))];
@@ -1036,7 +1123,9 @@ export default function Home() {
               <ExclusionManager
                 holdings={groupHoldings}
                 excluded={excluded}
-                onToggle={toggleExcluded}
+                forceIncluded={forceIncluded}
+                onToggleExclude={toggleExcluded}
+                onToggleForceInclude={toggleForceIncluded}
               />
             </div>
 
