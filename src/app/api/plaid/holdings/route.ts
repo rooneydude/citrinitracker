@@ -8,6 +8,10 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Refresh holdings using an already-exchanged access_token. Called on
+ * subsequent page loads / manual refresh without a re-link.
+ */
 export async function POST(request: Request) {
   const configError = assertPlaidConfigured();
   if (configError) {
@@ -15,22 +19,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { public_token } = await request.json();
+    const { access_token } = await request.json();
 
-    if (!public_token || typeof public_token !== "string") {
+    if (!access_token || typeof access_token !== "string") {
       return NextResponse.json(
-        { error: "Missing public_token" },
+        { error: "Missing access_token" },
         { status: 400 }
       );
     }
 
-    const exchangeResponse = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    });
-    const accessToken = exchangeResponse.data.access_token;
-
     const holdingsResponse = await plaidClient.investmentsHoldingsGet({
-      access_token: accessToken,
+      access_token,
     });
 
     const mapped = mapPlaidHoldings(
@@ -39,10 +38,7 @@ export async function POST(request: Request) {
       holdingsResponse.data.securities
     );
 
-    return NextResponse.json({
-      ...mapped,
-      access_token: accessToken,
-    });
+    return NextResponse.json(mapped);
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch holdings";

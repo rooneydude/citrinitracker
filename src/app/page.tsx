@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { usePlaidLink } from "react-plaid-link";
 import { parseGroupHoldings } from "@/lib/parseSpreadsheet";
 import { parseRobinhoodCSV } from "@/lib/parseRobinhoodCSV";
@@ -11,7 +11,10 @@ import {
   RebalanceResult,
   TradeAction,
   PlaidHoldingsResponse,
+  PlaidExchangeResponse,
 } from "@/lib/types";
+
+const PLAID_TOKEN_KEY = "citrini.plaid.access_token";
 
 function formatDollar(n: number): string {
   const abs = Math.abs(n);
@@ -167,7 +170,7 @@ function ExclusionManager({
           <div className="flex flex-wrap gap-2">
             {autoExcluded.map((h) => (
               <span
-                key={h.ticker}
+                key={`${h.basket}:${h.ticker}`}
                 className="px-3 py-1 rounded-full bg-red-dim text-red text-xs font-mono"
                 title={`${h.name} - ${h.exchange || "Unknown exchange"}`}
               >
@@ -189,7 +192,7 @@ function ExclusionManager({
             const isExcluded = excluded.has(h.ticker);
             return (
               <button
-                key={h.ticker}
+                key={`${h.basket}:${h.ticker}`}
                 onClick={() => onToggle(h.ticker)}
                 className={`px-3 py-1 rounded-full text-xs font-mono transition-all ${
                   isExcluded
@@ -212,21 +215,24 @@ function ExclusionManager({
 function PlaidConnectButton({
   onSuccess,
 }: {
-  onSuccess: (data: PlaidHoldingsResponse) => void;
+  onSuccess: (data: PlaidExchangeResponse) => void;
 }) {
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // NOTE: We intentionally don't use a ref-guard here. In React Strict Mode
+  // (dev only) the effect mounts -> cleans up -> mounts again; a ref-guard
+  // plus the cancelled pattern ends up silently dropping every response.
+  // A second create-link-token request on dev is harmless and idempotent.
   useEffect(() => {
     let cancelled = false;
     fetch("/api/plaid/create-link-token", { method: "POST" })
       .then((res) => res.json())
       .then((data) => {
-        if (!cancelled) {
-          if (data.link_token) setLinkToken(data.link_token);
-          else setError(data.error || "Could not initialize Plaid");
-        }
+        if (cancelled) return;
+        if (data.link_token) setLinkToken(data.link_token);
+        else setError(data.error || "Could not initialize Plaid");
       })
       .catch(() => {
         if (!cancelled) setError("Could not connect to server");
@@ -251,7 +257,7 @@ function PlaidConnectButton({
         if (data.error) {
           setError(data.error);
         } else {
-          onSuccess(data as PlaidHoldingsResponse);
+          onSuccess(data as PlaidExchangeResponse);
         }
       } catch {
         setError("Failed to fetch holdings from Robinhood");
@@ -304,17 +310,92 @@ function RobinhoodInput({
   const [manualShares, setManualShares] = useState("");
   const [manualPrice, setManualPrice] = useState("");
   const [plaidConnected, setPlaidConnected] = useState(false);
+  const [plaidRefreshing, setPlaidRefreshing] = useState(false);
+  const [plaidError, setPlaidError] = useState<string | null>(null);
 
-  const handlePlaidSuccess = useCallback(
+  const applyPlaidData = useCallback(
     (data: PlaidHoldingsResponse) => {
       setHoldings(data.holdings);
       if (data.portfolioValue > 0) {
         setPortfolioValue(data.portfolioValue.toFixed(2));
       }
-      setPlaidConnected(true);
     },
     [setHoldings, setPortfolioValue]
   );
+
+  const handlePlaidSuccess = useCallback(
+    (data: PlaidExchangeResponse) => {
+      applyPlaidData(data);
+      try {
+        localStorage.setItem(PLAID_TOKEN_KEY, data.access_token);
+      } catch {
+        // localStorage can throw in private mode; non-fatal.
+      }
+      setPlaidConnected(true);
+      setPlaidError(null);
+    },
+    [applyPlaidData]
+  );
+
+  const refreshFromPlaid = useCallback(
+    async (token: string) => {
+      setPlaidRefreshing(true);
+      setPlaidError(null);
+      try {
+        const res = await fetch("/api/plaid/holdings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_token: token }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          setPlaidError(data.error);
+          // 400/401-ish errors usually mean the token is dead. Forget it so
+          // the user sees the Connect button again.
+          if (res.status === 400 || res.status === 401) {
+            localStorage.removeItem(PLAID_TOKEN_KEY);
+            setPlaidConnected(false);
+          }
+        } else {
+          applyPlaidData(data as PlaidHoldingsResponse);
+          setPlaidConnected(true);
+        }
+      } catch {
+        setPlaidError("Failed to refresh holdings");
+      } finally {
+        setPlaidRefreshing(false);
+      }
+    },
+    [applyPlaidData]
+  );
+
+  const disconnectPlaid = useCallback(() => {
+    try {
+      localStorage.removeItem(PLAID_TOKEN_KEY);
+    } catch {
+      // ignore
+    }
+    setPlaidConnected(false);
+    setHoldings([]);
+    setPlaidError(null);
+  }, [setHoldings]);
+
+  // On mount, if we already have an access_token, auto-refresh holdings.
+  // Runs once (ref guard) to survive React Strict Mode double-mount.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    let token: string | null = null;
+    try {
+      token = localStorage.getItem(PLAID_TOKEN_KEY);
+    } catch {
+      // ignore
+    }
+    if (token) {
+      refreshFromPlaid(token);
+    }
+  }, [refreshFromPlaid]);
 
   const handleCSVPaste = () => {
     const parsed = parseRobinhoodCSV(csvText);
@@ -370,16 +451,35 @@ function RobinhoodInput({
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-accent/30 bg-accent-dim p-3 flex items-center justify-between">
-          <span className="text-accent text-sm font-semibold">
-            Robinhood connected via Plaid
-          </span>
-          <button
-            onClick={() => setPlaidConnected(false)}
-            className="text-foreground/40 text-xs hover:text-foreground/60"
-          >
-            Reconnect
-          </button>
+        <div className="rounded-xl border border-accent/30 bg-accent-dim p-3 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-accent text-sm font-semibold">
+              {plaidRefreshing
+                ? "Refreshing Robinhood holdings…"
+                : "Robinhood connected via Plaid"}
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  const token = localStorage.getItem(PLAID_TOKEN_KEY);
+                  if (token) refreshFromPlaid(token);
+                }}
+                disabled={plaidRefreshing}
+                className="text-foreground/60 text-xs font-semibold hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={disconnectPlaid}
+                className="text-foreground/40 text-xs hover:text-red"
+              >
+                Disconnect
+              </button>
+            </div>
+          </div>
+          {plaidError ? (
+            <p className="text-red text-xs">{plaidError}</p>
+          ) : null}
         </div>
       )}
 

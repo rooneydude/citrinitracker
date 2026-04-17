@@ -45,6 +45,10 @@ export interface PlaidHoldingsResponse {
   portfolioValue: number;
 }
 
+export interface PlaidExchangeResponse extends PlaidHoldingsResponse {
+  access_token: string;
+}
+
 // Known non-Robinhood exchanges
 export const NON_ROBINHOOD_EXCHANGES = new Set([
   "XTKS",  // Tokyo
