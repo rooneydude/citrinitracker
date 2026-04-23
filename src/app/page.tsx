@@ -341,6 +341,120 @@ function PlaidConnectButton({
   );
 }
 
+// Inline edit form for one holding. Rendered only while a row is being
+// edited; mounts with `useState` initializers pre-populated from the
+// current holding. When the user finishes (save/cancel) the parent swaps
+// back to `HoldingRowDisplay`, which unmounts this form — so we never need
+// to sync state back to props.
+function HoldingRowEdit({
+  holding,
+  onSave,
+  onCancel,
+}: {
+  holding: RobinhoodHolding;
+  onSave: (shares: number, price: number) => void;
+  onCancel: () => void;
+}) {
+  const [sharesInput, setSharesInput] = useState(String(holding.shares));
+  const [priceInput, setPriceInput] = useState(
+    holding.currentPrice > 0 ? holding.currentPrice.toFixed(2) : ""
+  );
+
+  const commit = () => {
+    const shares = parseFloat(sharesInput);
+    const price = parseFloat(priceInput);
+    if (!Number.isFinite(shares) || shares <= 0) return;
+    onSave(shares, Number.isFinite(price) && price > 0 ? price : 0);
+  };
+
+  return (
+    <div className="flex items-center gap-2 bg-card rounded-lg px-3 py-2 text-sm font-mono ring-1 ring-accent/40">
+      <span className="text-accent font-bold min-w-[4rem]">
+        {holding.ticker}
+      </span>
+      <input
+        autoFocus
+        type="number"
+        step="any"
+        value={sharesInput}
+        onChange={(e) => setSharesInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="shares"
+        className="flex-1 min-w-0 bg-background border border-card-border rounded px-2 py-1 text-sm font-mono text-foreground focus:outline-none focus:border-accent"
+      />
+      <input
+        type="number"
+        step="any"
+        value={priceInput}
+        onChange={(e) => setPriceInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="price"
+        className="flex-1 min-w-0 bg-background border border-card-border rounded px-2 py-1 text-sm font-mono text-foreground focus:outline-none focus:border-accent"
+      />
+      <button
+        onClick={commit}
+        className="px-2 py-1 bg-accent text-background font-semibold rounded text-xs hover:bg-accent/80"
+      >
+        Save
+      </button>
+      <button
+        onClick={onCancel}
+        className="px-2 py-1 text-foreground/50 text-xs hover:text-foreground"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+// Read-only holding row — clicking anywhere but the remove button opens
+// the inline editor for correcting Plaid-imported counts that don't reflect
+// reality (intraday trades, unsettled orders, partial-share rounding, etc.).
+function HoldingRowDisplay({
+  holding,
+  onStartEdit,
+  onRemove,
+}: {
+  holding: RobinhoodHolding;
+  onStartEdit: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div
+      className="group flex justify-between items-center bg-card rounded-lg px-3 py-2 text-sm font-mono cursor-pointer hover:bg-card-border/20 transition"
+      onClick={onStartEdit}
+      title="Click to edit"
+    >
+      <span className="text-accent font-bold">{holding.ticker}</span>
+      <span className="text-foreground/60">
+        {holding.shares} shares
+        {holding.currentPrice > 0 && ` @ $${holding.currentPrice.toFixed(2)}`}
+        {holding.marketValue > 0 && (
+          <span className="ml-2 text-foreground/40">
+            = {formatDollar(holding.marketValue)}
+          </span>
+        )}
+      </span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="text-red/60 hover:text-red ml-2"
+        title="Remove"
+      >
+        x
+      </button>
+    </div>
+  );
+}
+
 // Robinhood Input
 function RobinhoodInput({
   portfolioValue,
@@ -357,6 +471,7 @@ function RobinhoodInput({
   const [manualTicker, setManualTicker] = useState("");
   const [manualShares, setManualShares] = useState("");
   const [manualPrice, setManualPrice] = useState("");
+  const [editingTicker, setEditingTicker] = useState<string | null>(null);
   const [plaidConnected, setPlaidConnected] = useState(false);
   const [plaidRefreshing, setPlaidRefreshing] = useState(false);
   const [plaidError, setPlaidError] = useState<string | null>(null);
@@ -497,6 +612,26 @@ function RobinhoodInput({
 
   const removeHolding = (ticker: string) => {
     setHoldings(holdings.filter((h) => h.ticker !== ticker));
+    if (editingTicker === ticker) setEditingTicker(null);
+  };
+
+  const saveEdit = (ticker: string, shares: number, price: number) => {
+    setHoldings(
+      holdings.map((h) =>
+        h.ticker === ticker
+          ? {
+              ...h,
+              shares,
+              currentPrice: price,
+              // Recompute marketValue so the summary total stays correct.
+              // If price is 0 (user cleared it), keep marketValue at 0 rather
+              // than clinging to the old Plaid dollar figure with new shares.
+              marketValue: price > 0 ? shares * price : 0,
+            }
+          : h
+      )
+    );
+    setEditingTicker(null);
   };
 
   return (
@@ -656,31 +791,34 @@ function RobinhoodInput({
         </div>
 
         {holdings.length > 0 && (
-          <div className="mt-4 space-y-1">
-            {holdings.map((h) => (
-              <div
-                key={h.ticker}
-                className="flex justify-between items-center bg-card rounded-lg px-3 py-2 text-sm font-mono"
-              >
-                <span className="text-accent font-bold">{h.ticker}</span>
-                <span className="text-foreground/60">
-                  {h.shares} shares
-                  {h.currentPrice > 0 && ` @ $${h.currentPrice.toFixed(2)}`}
-                  {h.marketValue > 0 && (
-                    <span className="ml-2 text-foreground/40">
-                      = {formatDollar(h.marketValue)}
-                    </span>
-                  )}
-                </span>
-                <button
-                  onClick={() => removeHolding(h.ticker)}
-                  className="text-red/60 hover:text-red ml-2"
-                >
-                  x
-                </button>
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="mt-4 space-y-1">
+              {holdings.map((h) =>
+                editingTicker === h.ticker ? (
+                  <HoldingRowEdit
+                    key={h.ticker}
+                    holding={h}
+                    onSave={(shares, price) => saveEdit(h.ticker, shares, price)}
+                    onCancel={() => setEditingTicker(null)}
+                  />
+                ) : (
+                  <HoldingRowDisplay
+                    key={h.ticker}
+                    holding={h}
+                    onStartEdit={() => setEditingTicker(h.ticker)}
+                    onRemove={() => removeHolding(h.ticker)}
+                  />
+                )
+              )}
+            </div>
+            {plaidConnected && (
+              <p className="text-foreground/30 text-xs mt-2 italic">
+                Click a row to edit share count (e.g. to fix an intraday trade
+                Plaid hasn&apos;t picked up yet). Edits are overwritten on the
+                next Plaid refresh.
+              </p>
+            )}
+          </>
         )}
 
         {holdings.length === 0 && (
