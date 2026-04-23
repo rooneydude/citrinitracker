@@ -23,6 +23,7 @@ const EXCLUDED_KEY = "citrini.excluded.v2";
 const FORCE_INCLUDED_KEY = "citrini.forceIncluded";
 const PORTFOLIO_VALUE_KEY = "citrini.portfolioValue";
 const PLAID_LAST_REFRESH_KEY = "citrini.plaid.lastRefreshedAt";
+const RH_HOLDINGS_KEY = "citrini.rhHoldings";
 
 function formatTimeAgo(ts: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -1133,6 +1134,7 @@ export default function Home() {
     setExcluded(new Set());
     setForceIncluded(new Set());
     setPortfolioValue("");
+    setRhHoldings([]);
     setStep(1);
     try {
       localStorage.removeItem(GROUP_HOLDINGS_KEY);
@@ -1140,6 +1142,7 @@ export default function Home() {
       localStorage.removeItem(EXCLUDED_KEY);
       localStorage.removeItem(FORCE_INCLUDED_KEY);
       localStorage.removeItem(PORTFOLIO_VALUE_KEY);
+      localStorage.removeItem(RH_HOLDINGS_KEY);
     } catch {
       // ignore
     }
@@ -1186,6 +1189,16 @@ export default function Home() {
       if (pvRaw) {
         const n = parseFloat(pvRaw);
         if (Number.isFinite(n) && n > 0) setPortfolioValue(pvRaw);
+      }
+      // Restore Robinhood holdings (manual CSV/typed entries). If a Plaid
+      // token is stored, `RobinhoodInput` will auto-refresh on mount and
+      // overwrite this with fresh broker data; that's the desired behavior
+      // (Plaid is source of truth when connected). For users without Plaid,
+      // this restores their manual list across reloads.
+      const rhJson = localStorage.getItem(RH_HOLDINGS_KEY);
+      if (rhJson) {
+        const parsed = JSON.parse(rhJson) as RobinhoodHolding[];
+        if (Array.isArray(parsed)) setRhHoldings(parsed);
       }
     } catch {
       // Corrupt storage — ignore and start fresh.
@@ -1249,6 +1262,21 @@ export default function Home() {
       // non-fatal
     }
   }, [portfolioValue]);
+
+  // Persist Robinhood holdings. Works for both Plaid-sourced and manual
+  // entries — on reload, whichever path is active repopulates them (Plaid
+  // via auto-refresh, manual via this hydration).
+  useEffect(() => {
+    try {
+      if (rhHoldings.length > 0) {
+        localStorage.setItem(RH_HOLDINGS_KEY, JSON.stringify(rhHoldings));
+      } else {
+        localStorage.removeItem(RH_HOLDINGS_KEY);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [rhHoldings]);
 
   const result: RebalanceResult | null = useMemo(() => {
     const pv = parseFloat(portfolioValue);
