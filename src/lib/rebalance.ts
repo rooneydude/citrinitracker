@@ -7,6 +7,26 @@ import {
   ROBINHOOD_EXCHANGES,
 } from "./types";
 
+// Minimum trade size in dollars to include in the output. Scales with
+// portfolio value so we don't flood a $1M portfolio with $1.50 round-off
+// "trades", while still generating meaningful trades on small accounts.
+//
+// Floor of $1 because: fractional shares round, Robinhood's minimum order
+// is a few cents, and slippage on a sub-$1 trade is a rounding error anyway.
+// Rate of 1 bp (0.01%) of portfolio: feels right across the range —
+//   $10k  -> $1   (floor kicks in)
+//   $100k -> $10
+//   $1M   -> $100
+const TRADE_THRESHOLD_BPS = 1;
+const TRADE_THRESHOLD_FLOOR = 1;
+
+export function tradeThreshold(portfolioValue: number): number {
+  return Math.max(
+    TRADE_THRESHOLD_FLOOR,
+    (portfolioValue * TRADE_THRESHOLD_BPS) / 10_000
+  );
+}
+
 export function isAvailableOnRobinhood(holding: GroupHolding): boolean {
   // Options are not directly replicable
   if (holding.isOption) return false;
@@ -89,6 +109,7 @@ export function rebalance(
 
   // Calculate trades
   const trades: TradeAction[] = [];
+  const threshold = tradeThreshold(portfolioValue);
 
   for (const holding of longHoldings) {
     const targetWeight = holding.allocation * reweightFactor;
@@ -103,8 +124,9 @@ export function rebalance(
     const price = current?.currentPrice || holding.lastPrice;
     const deltaShares = price > 0 ? deltaValue / price : 0;
 
-    // Only include if there's a meaningful trade (> $1)
-    if (Math.abs(deltaValue) > 1) {
+    // Only include if the trade is above the threshold (max of $1 floor
+    // and 1 bp of the portfolio). See `tradeThreshold` for rationale.
+    if (Math.abs(deltaValue) > threshold) {
       trades.push({
         ticker: holding.cleanTicker,
         name: holding.name,
@@ -126,7 +148,7 @@ export function rebalance(
     const inTarget = longHoldings.some(
       (h) => h.cleanTicker.toUpperCase() === ticker
     );
-    if (!inTarget && rh.marketValue > 1) {
+    if (!inTarget && rh.marketValue > threshold) {
       trades.push({
         ticker: rh.ticker,
         name: rh.ticker,

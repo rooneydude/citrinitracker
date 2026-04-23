@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isAvailableOnRobinhood, rebalance } from "./rebalance";
+import { isAvailableOnRobinhood, rebalance, tradeThreshold } from "./rebalance";
 import type { GroupHolding, RobinhoodHolding } from "./types";
 
 // ---------- fixtures ----------
@@ -337,7 +337,7 @@ describe("rebalance", () => {
     });
   });
 
-  it("filters out micro-deltas under $1", () => {
+  it("filters out micro-deltas under $1 on a $10k portfolio (floor)", () => {
     // Single 100% target of $10k; held $9999.5 -> $0.50 delta, should be
     // dropped. (Using 100% avoids the reweight factor kicking in.)
     const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
@@ -346,6 +346,56 @@ describe("rebalance", () => {
     ];
     const result = rebalance(groups, rh, 10_000, new Set());
     expect(result.trades).toHaveLength(0);
+  });
+
+  it("scales the trade threshold with portfolio size (1 bp)", () => {
+    // On a $1M portfolio, 1 bp is $100, so a $50 delta is noise.
+    // (One 100% target so reweight factor is 1.)
+    const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+    const rh = [
+      // Held $999,950 vs target $1,000,000 -> $50 delta, below $100 threshold.
+      makeRh({ ticker: "NVDA", shares: 9_999.5, marketValue: 999_950 }),
+    ];
+    const result = rebalance(groups, rh, 1_000_000, new Set());
+    expect(result.trades).toHaveLength(0);
+  });
+
+  it("emits a trade when delta exceeds the bps-scaled threshold", () => {
+    // Same setup, but $200 delta on a $1M portfolio -> 2 bps, above threshold.
+    const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+    const rh = [
+      makeRh({ ticker: "NVDA", shares: 9_998, marketValue: 999_800 }),
+    ];
+    const result = rebalance(groups, rh, 1_000_000, new Set());
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0]).toMatchObject({ ticker: "NVDA", action: "BUY" });
+  });
+
+  it("applies the same threshold to stranded (not-in-target) SELLs", () => {
+    // On a $1M portfolio, a $50 stranded holding should not generate a SELL
+    // (below the $100 / 1 bp threshold). A $200 one should.
+    const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+    const rh = [
+      makeRh({ ticker: "NVDA", shares: 10_000, marketValue: 1_000_000 }),
+      makeRh({ ticker: "DUST", shares: 1, currentPrice: 50, marketValue: 50 }),
+      makeRh({ ticker: "OLD", shares: 1, currentPrice: 200, marketValue: 200 }),
+    ];
+    const result = rebalance(groups, rh, 1_000_000, new Set());
+    const tickers = result.trades.map((t) => t.ticker);
+    expect(tickers).not.toContain("DUST");
+    expect(tickers).toContain("OLD");
+  });
+
+  it("tradeThreshold returns $1 floor for small portfolios", () => {
+    expect(tradeThreshold(0)).toBe(1);
+    expect(tradeThreshold(5_000)).toBe(1);
+    expect(tradeThreshold(10_000)).toBe(1);
+  });
+
+  it("tradeThreshold scales at 1 bp above the floor", () => {
+    expect(tradeThreshold(100_000)).toBeCloseTo(10, 6);
+    expect(tradeThreshold(1_000_000)).toBeCloseTo(100, 6);
+    expect(tradeThreshold(10_000_000)).toBeCloseTo(1_000, 6);
   });
 
   it("sorts trades by |deltaValue| descending", () => {
