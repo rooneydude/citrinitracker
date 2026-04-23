@@ -10,6 +10,7 @@ import {
   RobinhoodHolding,
   RebalanceResult,
   TradeAction,
+  BasketSummary,
   PlaidHoldingsResponse,
   PlaidExchangeResponse,
 } from "@/lib/types";
@@ -832,6 +833,110 @@ function RobinhoodInput({
   );
 }
 
+// Per-basket breakdown. Shows how far off each basket is from its
+// reweighted target, so the user can sanity-check the overall shape of
+// the rebalance before executing 20+ individual trades.
+//
+// Layout is intentionally compact: each row has a two-bar visualization
+// (current weight vs target weight) so the eye can see over/under at a
+// glance, plus the dollar delta for the "how much does this move" answer.
+function BasketBreakdown({ summaries }: { summaries: BasketSummary[] }) {
+  if (summaries.length === 0) return null;
+
+  // Scale bars relative to the largest weight across all baskets so
+  // differences stay visually meaningful on portfolios that are mostly
+  // one big basket.
+  const maxWeight = Math.max(
+    ...summaries.flatMap((b) => [b.currentWeight, b.targetWeight]),
+    1
+  );
+
+  return (
+    <div className="bg-card rounded-xl border border-card-border overflow-hidden">
+      <div className="px-4 py-3 border-b border-card-border">
+        <h3 className="text-sm font-bold text-foreground/60 uppercase tracking-wide">
+          Basket Breakdown
+        </h3>
+        <p className="text-foreground/30 text-xs mt-0.5">
+          Current vs. reweighted target, sorted by dollar distance.
+        </p>
+      </div>
+      <div className="divide-y divide-card-border/50">
+        {summaries.map((b) => {
+          const delta = b.deltaValue;
+          const isBuy = delta > 0;
+          const isFlat = Math.abs(delta) < 0.5;
+          const currentPct = (b.currentWeight / maxWeight) * 100;
+          const targetPct = (b.targetWeight / maxWeight) * 100;
+          return (
+            <div
+              key={b.basket}
+              className="px-4 py-3 grid grid-cols-12 gap-3 items-center text-sm"
+            >
+              <div className="col-span-12 sm:col-span-3 flex items-center gap-2">
+                <span className="font-semibold text-foreground truncate">
+                  {b.basket}
+                </span>
+                {b.positionCount > 0 ? (
+                  <span className="text-foreground/30 text-xs font-mono">
+                    ({b.positionCount})
+                  </span>
+                ) : null}
+              </div>
+              <div className="col-span-12 sm:col-span-6 space-y-1">
+                <div
+                  className="flex items-center gap-2"
+                  title={`Current: ${formatPct(b.currentWeight)} / ${formatDollar(b.currentValue)}`}
+                >
+                  <span className="text-foreground/40 text-xs w-10 shrink-0">
+                    now
+                  </span>
+                  <div className="flex-1 h-2 bg-card-border/30 rounded overflow-hidden">
+                    <div
+                      className="h-full bg-foreground/30 rounded"
+                      style={{ width: `${currentPct}%` }}
+                    />
+                  </div>
+                  <span className="text-foreground/60 font-mono text-xs w-12 text-right shrink-0">
+                    {formatPct(b.currentWeight)}
+                  </span>
+                </div>
+                <div
+                  className="flex items-center gap-2"
+                  title={`Target: ${formatPct(b.targetWeight)} / ${formatDollar(b.targetValue)}`}
+                >
+                  <span className="text-foreground/40 text-xs w-10 shrink-0">
+                    target
+                  </span>
+                  <div className="flex-1 h-2 bg-card-border/30 rounded overflow-hidden">
+                    <div
+                      className="h-full bg-accent/60 rounded"
+                      style={{ width: `${targetPct}%` }}
+                    />
+                  </div>
+                  <span className="text-accent font-mono text-xs w-12 text-right shrink-0">
+                    {formatPct(b.targetWeight)}
+                  </span>
+                </div>
+              </div>
+              <div className="col-span-12 sm:col-span-3 text-right font-mono text-sm">
+                {isFlat ? (
+                  <span className="text-foreground/30">balanced</span>
+                ) : (
+                  <span className={isBuy ? "text-accent" : "text-red"}>
+                    {isBuy ? "+" : "-"}
+                    {formatDollar(Math.abs(delta)).replace("-", "")}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Trade Table
 function TradeTable({ result }: { result: RebalanceResult }) {
   const buys = result.trades.filter((t) => t.action === "BUY");
@@ -1403,8 +1508,11 @@ export default function Home() {
               portfolio. Non-Robinhood stocks have been excluded and weights
               redistributed proportionally.
             </p>
-            <TradeActionList trades={result.trades} />
-            <TradeTable result={result} />
+            <div className="space-y-6">
+              <TradeActionList trades={result.trades} />
+              <BasketBreakdown summaries={result.basketSummaries} />
+              <TradeTable result={result} />
+            </div>
           </section>
         )}
       </div>

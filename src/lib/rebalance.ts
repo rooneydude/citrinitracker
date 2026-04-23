@@ -3,6 +3,7 @@ import {
   RobinhoodHolding,
   TradeAction,
   RebalanceResult,
+  BasketSummary,
   NON_ROBINHOOD_EXCHANGES,
   ROBINHOOD_EXCHANGES,
 } from "./types";
@@ -168,10 +169,77 @@ export function rebalance(
   // Sort by absolute delta value descending
   trades.sort((a, b) => Math.abs(b.deltaValue) - Math.abs(a.deltaValue));
 
+  // Per-basket roll-up. Gives the user a sanity-check view ("Is basket X
+  // actually the one I expected to be most underweight?") before clicking
+  // through 20+ individual orders. Aggregates both sides:
+  //   - target: sum of post-reweight target values for longs in this basket
+  //   - current: sum of current marketValue for tickers in this basket,
+  //     regardless of whether they're also in the target (stranded old
+  //     holdings still count against "current weight" of their original basket)
+  //
+  // Stranded holdings (not in any target basket) all roll into a synthetic
+  // "Not in target" bucket so the grid totals equal the portfolio.
+  const basketMap = new Map<string, BasketSummary>();
+
+  const upsertBasket = (name: string): BasketSummary => {
+    let b = basketMap.get(name);
+    if (!b) {
+      b = {
+        basket: name,
+        targetWeight: 0,
+        currentWeight: 0,
+        targetValue: 0,
+        currentValue: 0,
+        deltaValue: 0,
+        positionCount: 0,
+      };
+      basketMap.set(name, b);
+    }
+    return b;
+  };
+
+  for (const holding of longHoldings) {
+    const targetWeight = holding.allocation * reweightFactor;
+    const targetValue = (targetWeight / 100) * portfolioValue;
+    const current = currentMap.get(holding.cleanTicker.toUpperCase());
+    const currentValue = current ? current.marketValue : 0;
+
+    const b = upsertBasket(holding.basket || "Uncategorized");
+    b.targetWeight += targetWeight;
+    b.targetValue += targetValue;
+    b.currentValue += currentValue;
+    b.positionCount += 1;
+  }
+
+  // Stranded current holdings — everything RH reports that isn't in a
+  // target basket above.
+  const targetTickers = new Set(
+    longHoldings.map((h) => h.cleanTicker.toUpperCase())
+  );
+  for (const [ticker, rh] of currentMap) {
+    if (!targetTickers.has(ticker) && rh.marketValue > 0) {
+      const b = upsertBasket("Not in target");
+      b.currentValue += rh.marketValue;
+    }
+  }
+
+  const basketSummaries: BasketSummary[] = [];
+  for (const b of basketMap.values()) {
+    b.currentWeight =
+      portfolioValue > 0 ? (b.currentValue / portfolioValue) * 100 : 0;
+    b.deltaValue = b.targetValue - b.currentValue;
+    basketSummaries.push(b);
+  }
+  // Sort by absolute dollar delta so the most-off baskets bubble to the top.
+  basketSummaries.sort(
+    (a, b) => Math.abs(b.deltaValue) - Math.abs(a.deltaValue)
+  );
+
   return {
     trades,
     excludedHoldings: excluded,
     reweightFactor,
     portfolioValue,
+    basketSummaries,
   };
 }

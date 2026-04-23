@@ -447,4 +447,144 @@ describe("rebalance", () => {
     // Already balanced -> 0 trades.
     expect(result.trades).toHaveLength(0);
   });
+
+  describe("basket summaries", () => {
+    it("aggregates target weights and values per basket", () => {
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 25, basket: "AI" }),
+        makeGroup({
+          cleanTicker: "AMD",
+          allocation: 25,
+          basket: "AI",
+          ticker: "AMD US Equity",
+        }),
+        makeGroup({
+          cleanTicker: "XOM",
+          allocation: 50,
+          basket: "Energy",
+          ticker: "XOM US Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 10_000, new Set());
+      const ai = result.basketSummaries.find((b) => b.basket === "AI")!;
+      const energy = result.basketSummaries.find(
+        (b) => b.basket === "Energy"
+      )!;
+
+      expect(ai.positionCount).toBe(2);
+      expect(ai.targetWeight).toBeCloseTo(50, 6);
+      expect(ai.targetValue).toBeCloseTo(5_000, 6);
+      expect(ai.currentValue).toBe(0);
+      expect(ai.deltaValue).toBeCloseTo(5_000, 6);
+
+      expect(energy.positionCount).toBe(1);
+      expect(energy.targetWeight).toBeCloseTo(50, 6);
+      expect(energy.targetValue).toBeCloseTo(5_000, 6);
+    });
+
+    it("uses reweighted target weights (not raw sheet allocation)", () => {
+      // 40% NVDA US + 60% GLEN LN (excluded by exchange) -> NVDA reweights
+      // to 100%. Basket target should reflect the post-reweight target.
+      const groups = [
+        makeGroup({
+          cleanTicker: "NVDA",
+          allocation: 40,
+          basket: "AI",
+          exchange: "XNGS",
+        }),
+        makeGroup({
+          cleanTicker: "GLEN",
+          allocation: 60,
+          basket: "Commodities",
+          exchange: "XLON",
+          ticker: "GLEN LN Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 10_000, new Set());
+      const ai = result.basketSummaries.find((b) => b.basket === "AI")!;
+      expect(ai.targetWeight).toBeCloseTo(100, 6);
+      expect(ai.targetValue).toBeCloseTo(10_000, 6);
+      // Excluded basket shouldn't appear in the summary at all — it has no
+      // longHoldings surviving the exclusion filter.
+      expect(
+        result.basketSummaries.find((b) => b.basket === "Commodities")
+      ).toBeUndefined();
+    });
+
+    it("rolls stranded current holdings into a 'Not in target' bucket", () => {
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 100, basket: "AI" }),
+      ];
+      const rh = [
+        makeRh({ ticker: "NVDA", shares: 50, marketValue: 5_000 }),
+        makeRh({
+          ticker: "OLD",
+          shares: 10,
+          currentPrice: 100,
+          marketValue: 1_000,
+        }),
+      ];
+      const result = rebalance(groups, rh, 10_000, new Set());
+      const stranded = result.basketSummaries.find(
+        (b) => b.basket === "Not in target"
+      )!;
+      expect(stranded).toBeDefined();
+      expect(stranded.currentValue).toBe(1_000);
+      expect(stranded.currentWeight).toBeCloseTo(10, 6);
+      // Not-in-target has no target allocation, so delta is negative (sell).
+      expect(stranded.targetValue).toBe(0);
+      expect(stranded.deltaValue).toBe(-1_000);
+      expect(stranded.positionCount).toBe(0);
+    });
+
+    it("sorts baskets by |deltaValue| descending (most-off first)", () => {
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 10, basket: "AI" }),
+        makeGroup({
+          cleanTicker: "XOM",
+          allocation: 90,
+          basket: "Energy",
+          ticker: "XOM US Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 100_000, new Set());
+      expect(result.basketSummaries[0].basket).toBe("Energy");
+      expect(result.basketSummaries[1].basket).toBe("AI");
+    });
+
+    it("currentWeight across all baskets equals the invested fraction", () => {
+      // Sanity: summing basket.currentWeight across all baskets should
+      // equal (total current value / portfolioValue) * 100.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 50, basket: "AI" }),
+        makeGroup({
+          cleanTicker: "XOM",
+          allocation: 50,
+          basket: "Energy",
+          ticker: "XOM US Equity",
+        }),
+      ];
+      const rh = [
+        makeRh({ ticker: "NVDA", shares: 30, marketValue: 3_000 }),
+        makeRh({
+          ticker: "XOM",
+          shares: 20,
+          currentPrice: 100,
+          marketValue: 2_000,
+        }),
+        makeRh({
+          ticker: "OLD",
+          shares: 10,
+          currentPrice: 50,
+          marketValue: 500,
+        }),
+      ];
+      const result = rebalance(groups, rh, 10_000, new Set());
+      const totalCurrentWeight = result.basketSummaries.reduce(
+        (s, b) => s + b.currentWeight,
+        0
+      );
+      expect(totalCurrentWeight).toBeCloseTo(55, 4); // ($5,500 / $10k) * 100
+    });
+  });
 });

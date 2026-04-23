@@ -32,11 +32,22 @@ export interface TradeAction {
   basket: string;
 }
 
+export interface BasketSummary {
+  basket: string;
+  targetWeight: number;    // sum of post-reweight target weights in this basket
+  currentWeight: number;   // sum of current marketValue / portfolioValue * 100
+  targetValue: number;
+  currentValue: number;
+  deltaValue: number;      // targetValue - currentValue (positive = need to buy)
+  positionCount: number;   // number of target positions in the basket
+}
+
 export interface RebalanceResult {
   trades: TradeAction[];
   excludedHoldings: GroupHolding[];
   reweightFactor: number;
   portfolioValue: number;
+  basketSummaries: BasketSummary[];
 }
 
 export interface PlaidHoldingsResponse {
