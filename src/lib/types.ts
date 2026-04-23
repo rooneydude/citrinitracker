@@ -35,7 +35,6 @@ export interface TradeAction {
 export interface RebalanceResult {
   trades: TradeAction[];
   excludedHoldings: GroupHolding[];
-  totalTargetWeight: number;
   reweightFactor: number;
   portfolioValue: number;
 }

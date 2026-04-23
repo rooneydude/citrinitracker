@@ -171,7 +171,6 @@ export function rebalance(
   return {
     trades,
     excludedHoldings: excluded,
-    totalTargetWeight: totalLongAlloc,
     reweightFactor,
     portfolioValue,
   };
