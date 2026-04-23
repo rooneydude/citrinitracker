@@ -31,11 +31,40 @@ function isBlank(v: unknown): boolean {
   return v === null || v === undefined || String(v).trim() === "";
 }
 
+// Matches common cash / money-market placeholder labels. Sheets in the wild
+// use a surprising range of these:
+//   "Cash", "cash", "CASH"
+//   "Cash USD", "Cash EUR", "USD Cash", "EUR Cash"
+//   "Money Market", "Money Market Fund", "MMF"
+//   "Cash & Equivalents", "Cash and Equivalents", "Cash Equivalents"
+// These aren't tradeable positions and blow up ticker parsing if treated as one.
+//
+// Deliberately strict full-string patterns — we do NOT want to catch the real
+// Bloomberg-form ticker "CASH US Equity" (Pathward Financial). Users who
+// actually hold Pathward will get it through normally; the placeholder
+// variants are what we're filtering out.
+const CURRENCY_CODE = /(usd|eur|gbp|jpy|chf|cad|aud|nzd|sek|nok|dkk|hkd|sgd|cny)/;
+const CASH_ROW_PATTERNS: RegExp[] = [
+  /^cash$/,
+  /^mmf$/,
+  new RegExp(`^cash\\s+${CURRENCY_CODE.source}$`),
+  new RegExp(`^${CURRENCY_CODE.source}\\s+cash$`),
+  new RegExp(`^cash\\s*\\(${CURRENCY_CODE.source}\\)$`),
+  /^money\s*market(\s+fund)?$/,
+  /^cash\s*(&|and)?\s*equivalents?$/,
+];
+
+export function isCashRow(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  const s = String(value).trim().toLowerCase();
+  if (s === "") return false;
+  return CASH_ROW_PATTERNS.some((re) => re.test(s));
+}
+
 const SUMMARY_LABELS = new Set([
   "Net exposure",
   "Long exposure",
   "Short exposure",
-  "Cash",
   "Gross exposure",
 ]);
 
@@ -65,6 +94,10 @@ export function parseGroupHoldings(buffer: ArrayBuffer): GroupHolding[] {
       const col0Str = String(col0);
 
       if (SUMMARY_LABELS.has(col0Str)) continue;
+      // Cash placeholders can appear either in-basket (col1) or as a
+      // standalone row (col0) — e.g. "Cash USD" sitting at the bottom of
+      // the sheet. Filter both spots.
+      if (isCashRow(col0Str)) continue;
 
       const basketLevel = String(col5 || "");
       if (basketLevel.includes("Net:") || basketLevel.includes("Long:")) {
@@ -98,8 +131,8 @@ export function parseGroupHoldings(buffer: ArrayBuffer): GroupHolding[] {
     }
 
     // Case 2: col0 is blank — it's a stock row inside the most recent basket.
-    // Skip "Cash" placeholder rows (col1 === "Cash") since they aren't holdings.
-    if (!isBlank(col1) && String(col1).trim() !== "Cash") {
+    // Skip cash / money-market placeholder rows since they aren't holdings.
+    if (!isBlank(col1) && !isCashRow(col1)) {
       const ticker = String(col1);
       const name = isBlank(col2) ? "" : String(col2);
       const allocation = Number(col3) || 0;

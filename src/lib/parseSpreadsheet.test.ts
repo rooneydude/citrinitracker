@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as XLSX from "xlsx";
-import { parseGroupHoldings } from "./parseSpreadsheet";
+import { parseGroupHoldings, isCashRow } from "./parseSpreadsheet";
 
 // ---------- helpers ----------
 
@@ -161,6 +161,57 @@ describe("parseGroupHoldings", () => {
 
     const holdings = parseGroupHoldings(buf);
     expect(holdings.map((h) => h.cleanTicker)).toEqual(["NVDA", "AMD"]);
+  });
+
+  it("skips cash-variant rows (USD Cash, Cash EUR, Money Market Fund, MMF, etc.)", () => {
+    const buf = buildXlsx([
+      basketHeader("AI"),
+      stockRow("NVDA US Equity", "NVIDIA", 50),
+      // In-basket variants (col1).
+      stockRow("Cash USD", "", 0),
+      stockRow("USD Cash", "", 0),
+      stockRow("Cash EUR", "", 0),
+      stockRow("cash", "", 0),
+      stockRow("CASH", "", 0),
+      stockRow("Money Market", "", 0),
+      stockRow("Money Market Fund", "", 0),
+      stockRow("MMF", "", 0),
+      stockRow("Cash & Equivalents", "", 0),
+      stockRow("Cash and Equivalents", "", 0),
+      stockRow("AMD US Equity", "AMD", 50),
+      // As single-position variants (col0) — should also be skipped.
+      summaryRow("Cash USD"),
+      summaryRow("Money Market Fund"),
+    ]);
+
+    const holdings = parseGroupHoldings(buf);
+    expect(holdings.map((h) => h.cleanTicker)).toEqual(["NVDA", "AMD"]);
+  });
+
+  it("isCashRow: true for known variants, false for real tickers", () => {
+    expect(isCashRow("Cash")).toBe(true);
+    expect(isCashRow("cash")).toBe(true);
+    expect(isCashRow("  CASH  ")).toBe(true);
+    expect(isCashRow("Cash USD")).toBe(true);
+    expect(isCashRow("USD Cash")).toBe(true);
+    expect(isCashRow("Cash EUR")).toBe(true);
+    expect(isCashRow("MMF")).toBe(true);
+    expect(isCashRow("Money Market")).toBe(true);
+    expect(isCashRow("Money Market Fund")).toBe(true);
+    expect(isCashRow("Cash & Equivalents")).toBe(true);
+    expect(isCashRow("Cash and Equivalents")).toBe(true);
+    expect(isCashRow("Cash Equivalents")).toBe(true);
+
+    // Regressions: don't eat real tickers that merely contain the letters.
+    expect(isCashRow("CASY")).toBe(false); // Casey's General Stores
+    // Pathward Financial's real Bloomberg ticker — must pass through, else
+    // someone who actually holds it would silently lose the position.
+    expect(isCashRow("CASH US Equity")).toBe(false);
+    expect(isCashRow("CASH US")).toBe(false);
+    expect(isCashRow("NVDA")).toBe(false);
+    expect(isCashRow("")).toBe(false);
+    expect(isCashRow(null)).toBe(false);
+    expect(isCashRow(undefined)).toBe(false);
   });
 
   it("cleans Bloomberg tickers to the first token", () => {
