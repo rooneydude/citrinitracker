@@ -55,10 +55,6 @@ export interface PlaidHoldingsResponse {
   portfolioValue: number;
 }
 
-export interface PlaidExchangeResponse extends PlaidHoldingsResponse {
-  access_token: string;
-}
-
 // Known non-Robinhood exchanges. MIC (ISO 10383) codes.
 // Robinhood only supports US-listed securities (NYSE/NASDAQ/ARCA/BATS/AMEX);
 // every entry below is a venue RH cannot route to.
