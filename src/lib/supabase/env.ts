@@ -1,14 +1,13 @@
-// Centralized so a missing env var fails loudly at boot rather than
-// silently producing broken Supabase clients. Both values are safe to
-// expose to the browser — the publishable key only grants the rights
-// defined by RLS, never service-role access.
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`${name} is not set`);
-  return v;
+// Lazy env access so the module graph can be imported during build
+// without these vars set. Calls fail loudly at request time if they're
+// still missing on the deployed instance.
+//
+// Both values are safe to expose to the browser — the publishable key
+// only grants what RLS allows, never service-role access.
+export function getSupabaseEnv(): { url: string; key: string } {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url) throw new Error("NEXT_PUBLIC_SUPABASE_URL is not set");
+  if (!key) throw new Error("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is not set");
+  return { url, key };
 }
-
-export const SUPABASE_URL = required("NEXT_PUBLIC_SUPABASE_URL");
-export const SUPABASE_PUBLISHABLE_KEY = required(
-  "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"
-);

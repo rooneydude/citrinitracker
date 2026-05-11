@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "./env";
+import { getSupabaseEnv } from "./env";
 
 // Routes a logged-out user is allowed to reach.
 const PUBLIC_PATHS = ["/login", "/signup", "/auth"];
@@ -11,8 +11,9 @@ function isPublic(pathname: string): boolean {
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
+  const { url, key } = getSupabaseEnv();
 
-  const supabase = createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  const supabase = createServerClient(url, key, {
     cookies: {
       getAll() {
         return request.cookies.getAll();
