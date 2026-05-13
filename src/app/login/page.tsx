@@ -64,20 +64,22 @@ export default async function LoginPage({
             </p>
           ) : null}
 
-          <div className="flex gap-3 pt-2">
-            <button
-              formAction={login}
-              className="flex-1 py-3 px-4 bg-accent text-background font-bold rounded-xl text-sm hover:bg-accent/80 transition"
-            >
-              Log in
-            </button>
+          <button
+            formAction={login}
+            className="w-full py-3 px-4 bg-accent text-background font-bold rounded-xl text-sm hover:bg-accent/80 transition"
+          >
+            Log in
+          </button>
+
+          <p className="text-center text-foreground/40 text-xs">
+            New here?{" "}
             <button
               formAction={signup}
-              className="flex-1 py-3 px-4 bg-card border border-card-border text-foreground font-semibold rounded-xl text-sm hover:border-accent transition"
+              className="text-accent font-semibold hover:underline"
             >
-              Sign up
+              Create an account
             </button>
-          </div>
+          </p>
         </form>
       </div>
     </main>
