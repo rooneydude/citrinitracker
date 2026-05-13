@@ -43,7 +43,7 @@ friendly error and users can still fall back to CSV paste or manual entry.
 
 ## Deploying
 
-The app is configured for Railway (`next.config.ts` uses `output: "standalone"`), but it also deploys cleanly to Vercel with zero config. Just set the `PLAID_*` env vars in the platform's dashboard.
+Deploys to Vercel with zero config. Set the `PLAID_*` env vars in the Vercel project's dashboard.
 
 ## Notes
 
