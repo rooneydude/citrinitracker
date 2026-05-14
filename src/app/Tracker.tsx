@@ -974,7 +974,7 @@ function TradeTable({ result }: { result: RebalanceResult }) {
           <div className="flex flex-wrap gap-2">
             {result.excludedHoldings.map((h) => (
               <span
-                key={h.ticker}
+                key={`${h.basket}:${h.ticker}`}
                 className="px-2 py-1 bg-red-dim text-red rounded text-xs font-mono"
                 title={`${h.name}: ${formatPct(h.allocation)}`}
               >

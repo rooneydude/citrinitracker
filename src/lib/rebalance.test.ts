@@ -587,4 +587,297 @@ describe("rebalance", () => {
       expect(totalCurrentWeight).toBeCloseTo(55, 4); // ($5,500 / $10k) * 100
     });
   });
+
+  // ---------- exclusion + force-include edge cases ----------
+  describe("exclusion edge cases", () => {
+    it("manually-excluded ticker held in RH generates a full SELL", () => {
+      // User holds NVDA but excludes it. Expected: SELL all NVDA via the
+      // stranded-holdings path; AAPL gets reweighted to 100%.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 50 }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 50,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const rh = [
+        makeRh({ ticker: "NVDA", shares: 30, marketValue: 3_000 }),
+      ];
+      const result = rebalance(groups, rh, 10_000, new Set(["NVDA"]));
+
+      const nvdaTrade = result.trades.find((t) => t.ticker === "NVDA");
+      expect(nvdaTrade).toMatchObject({
+        action: "SELL",
+        targetValue: 0,
+        currentValue: 3_000,
+        deltaValue: -3_000,
+        basket: "Not in target",
+      });
+      // AAPL reweights from 50% -> 100% since NVDA is gone from the target.
+      expect(result.reweightFactor).toBeCloseTo(2, 6);
+      const aaplTrade = result.trades.find((t) => t.ticker === "AAPL");
+      expect(aaplTrade?.targetWeight).toBeCloseTo(100, 6);
+    });
+
+    it("heuristic-excluded ticker held in RH still triggers a SELL", () => {
+      // User holds a foreign stock (GLEN, XLON). It's not in the
+      // post-exclusion target, but they still hold it — must SELL.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 50, exchange: "XNGS" }),
+        makeGroup({
+          cleanTicker: "GLEN",
+          allocation: 50,
+          exchange: "XLON",
+          ticker: "GLEN LN Equity",
+        }),
+      ];
+      const rh = [
+        makeRh({ ticker: "GLEN", shares: 100, currentPrice: 10, marketValue: 1_000 }),
+      ];
+      const result = rebalance(groups, rh, 10_000, new Set());
+
+      const glenSell = result.trades.find((t) => t.ticker === "GLEN");
+      expect(glenSell).toMatchObject({
+        action: "SELL",
+        currentValue: 1_000,
+        deltaValue: -1_000,
+        basket: "Not in target",
+      });
+    });
+
+    it("force-include of an isLong=false ticker still emits no trade", () => {
+      // Short positions are dropped from the long universe regardless of
+      // exclusion state. A user force-including a short does nothing useful
+      // but must not crash or trade.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 50, isLong: true }),
+        makeGroup({
+          cleanTicker: "SHORTY",
+          allocation: -50,
+          isLong: false,
+          ticker: "SHORTY US Equity",
+        }),
+      ];
+      const result = rebalance(
+        groups,
+        [],
+        10_000,
+        new Set(),
+        new Set(["SHORTY"])
+      );
+
+      expect(result.trades.map((t) => t.ticker)).toEqual(["NVDA"]);
+      // NVDA reweights to 100% — SHORTY is not in the long allocation pool.
+      expect(result.reweightFactor).toBeCloseTo(2, 6);
+    });
+
+    it("excluded Set entries for tickers not in the sheet are silently ignored", () => {
+      // Stale exclusion entries (e.g. left over after the user re-uploads a
+      // different sheet) shouldn't break anything — they just don't match.
+      const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+      const result = rebalance(
+        groups,
+        [],
+        10_000,
+        new Set(["GHOST_TICKER", "STALE", "NVDA"]) // NVDA in the sheet, others not
+      );
+      expect(result.trades).toHaveLength(0); // NVDA excluded -> no buys
+      expect(result.excludedHoldings.map((h) => h.cleanTicker)).toEqual(["NVDA"]);
+    });
+
+    it("force-include for an already-available ticker is a no-op (still trades)", () => {
+      // NVDA on XNGS would be available anyway; force-include should leave
+      // the result identical to no force-include.
+      const groups = [makeGroup({ cleanTicker: "NVDA", allocation: 100 })];
+      const a = rebalance(groups, [], 10_000, new Set());
+      const b = rebalance(groups, [], 10_000, new Set(), new Set(["NVDA"]));
+      expect(b.trades).toEqual(a.trades);
+      expect(b.reweightFactor).toBe(a.reweightFactor);
+      expect(b.excludedHoldings).toEqual(a.excludedHoldings);
+    });
+
+    it("scales target down when raw allocations sum to >100%", () => {
+      // Citrini sheets sometimes report allocations summing to >100% (e.g.
+      // 110% gross). The reweight should scale down so the actual sized
+      // portfolio is exactly 100%.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 60 }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 50,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 10_000, new Set());
+      // reweight factor scales 110 -> 100.
+      expect(result.reweightFactor).toBeCloseTo(100 / 110, 6);
+      const totalTargetWeight = result.trades.reduce(
+        (s, t) => s + t.targetWeight,
+        0
+      );
+      expect(totalTargetWeight).toBeCloseTo(100, 6);
+      const totalTargetValue = result.trades.reduce(
+        (s, t) => s + t.targetValue,
+        0
+      );
+      expect(totalTargetValue).toBeCloseTo(10_000, 4);
+    });
+
+    it("scales target up when raw allocations sum to <100% (e.g. under-allocated sheet)", () => {
+      // 80% gross allocation in the sheet -> reweight 80 -> 100.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 30 }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 50,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 10_000, new Set());
+      expect(result.reweightFactor).toBeCloseTo(100 / 80, 6);
+      const totalTargetValue = result.trades.reduce(
+        (s, t) => s + t.targetValue,
+        0
+      );
+      expect(totalTargetValue).toBeCloseTo(10_000, 4);
+    });
+
+    it("mixed scenario: shorts + heuristic-excluded + manual-excluded + force-included", () => {
+      // Comprehensive scenario:
+      //   - NVDA (US, long, 20)        -> available, traded
+      //   - GLEN (LN, long, 20)        -> heuristic excluded
+      //   - SHOP (CT, long, 20)        -> heuristic excluded, force-included
+      //   - SHORTY (US, short, -10)    -> dropped (not long)
+      //   - AAPL (US, long, 40)        -> manually excluded
+      // totalLongAlloc post-exclusion = NVDA(20) + SHOP(20) = 40 -> reweight 2.5
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 20, exchange: "XNGS" }),
+        makeGroup({
+          cleanTicker: "GLEN",
+          allocation: 20,
+          ticker: "GLEN LN Equity",
+          exchange: "XLON",
+        }),
+        makeGroup({
+          cleanTicker: "SHOP",
+          allocation: 20,
+          ticker: "SHOP CT Equity",
+          exchange: "XTSE",
+        }),
+        makeGroup({
+          cleanTicker: "SHORTY",
+          allocation: -10,
+          isLong: false,
+          ticker: "SHORTY US Equity",
+          exchange: "XNYS",
+        }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 40,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const result = rebalance(
+        groups,
+        [],
+        10_000,
+        new Set(["AAPL"]),
+        new Set(["SHOP"])
+      );
+
+      const tradedTickers = result.trades.map((t) => t.ticker).sort();
+      expect(tradedTickers).toEqual(["NVDA", "SHOP"]);
+      expect(result.reweightFactor).toBeCloseTo(2.5, 6);
+      const totalTargetValue = result.trades.reduce(
+        (s, t) => s + t.targetValue,
+        0
+      );
+      expect(totalTargetValue).toBeCloseTo(10_000, 4);
+      // GLEN + AAPL are in excludedHoldings; SHORTY is dropped silently
+      // (it's neither in available nor excluded).
+      const excludedTickers = result.excludedHoldings
+        .map((h) => h.cleanTicker)
+        .sort();
+      expect(excludedTickers).toEqual(["AAPL", "GLEN"]);
+    });
+
+    it("excluded ticker is removed from basket summaries entirely", () => {
+      // If a manual exclusion takes the last position out of a basket, the
+      // basket should disappear from basketSummaries — not appear as zero.
+      const groups = [
+        makeGroup({ cleanTicker: "NVDA", allocation: 50, basket: "AI" }),
+        makeGroup({
+          cleanTicker: "OLD_BASKET_ONLY",
+          allocation: 50,
+          basket: "Legacy",
+          ticker: "OLD_BASKET_ONLY US Equity",
+        }),
+      ];
+      const result = rebalance(
+        groups,
+        [],
+        10_000,
+        new Set(["OLD_BASKET_ONLY"])
+      );
+      const baskets = result.basketSummaries.map((b) => b.basket);
+      expect(baskets).toEqual(["AI"]);
+    });
+
+    it("normalizes cleanTicker case when checking exclusion sets", () => {
+      // Sheets sometimes use lowercase clean tickers; UI always uppercases.
+      // The rebalance() contract is that the Set keys are UPPERCASE — and
+      // h.cleanTicker is uppercased before lookup, so it matches.
+      const groups = [
+        makeGroup({ cleanTicker: "nvda", allocation: 50 }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 50,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const result = rebalance(groups, [], 10_000, new Set(["NVDA"]));
+      expect(result.trades.map((t) => t.ticker)).toEqual(["AAPL"]);
+    });
+
+    it("excludes both copies when same cleanTicker is in 2+ baskets and held", () => {
+      // NVDA in two baskets, also held in RH. After exclusion: both group
+      // entries excluded AND the RH position is sold (stranded).
+      const groups = [
+        makeGroup({
+          cleanTicker: "NVDA",
+          allocation: 25,
+          basket: "AI",
+        }),
+        makeGroup({
+          cleanTicker: "NVDA",
+          allocation: 25,
+          basket: "Semis",
+          ticker: "NVDA",
+        }),
+        makeGroup({
+          cleanTicker: "AAPL",
+          allocation: 50,
+          ticker: "AAPL US Equity",
+        }),
+      ];
+      const rh = [
+        makeRh({ ticker: "NVDA", shares: 50, marketValue: 5_000 }),
+      ];
+      const result = rebalance(groups, rh, 10_000, new Set(["NVDA"]));
+
+      // Both NVDA rows excluded.
+      expect(
+        result.excludedHoldings.filter((h) => h.cleanTicker === "NVDA")
+      ).toHaveLength(2);
+      // NVDA SELL emitted via stranded path.
+      const nvdaSell = result.trades.find(
+        (t) => t.ticker === "NVDA" && t.action === "SELL"
+      );
+      expect(nvdaSell).toBeDefined();
+      expect(nvdaSell?.deltaValue).toBe(-5_000);
+      // AAPL reweights from 50% -> 100%.
+      expect(result.reweightFactor).toBeCloseTo(2, 6);
+    });
+  });
 });
