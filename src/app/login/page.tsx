@@ -71,15 +71,23 @@ export default async function LoginPage({
             Log in
           </button>
 
-          <p className="text-center text-foreground/40 text-xs">
-            New here?{" "}
-            <button
-              formAction={signup}
-              className="text-accent font-semibold hover:underline"
-            >
-              Create an account
-            </button>
-          </p>
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-card-border" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="bg-card px-3 text-foreground/30 text-xs uppercase">
+                or
+              </span>
+            </div>
+          </div>
+
+          <button
+            formAction={signup}
+            className="w-full py-3 px-4 bg-background border-2 border-accent text-accent font-bold rounded-xl text-sm hover:bg-accent-dim transition"
+          >
+            Create an account
+          </button>
         </form>
       </div>
     </main>
