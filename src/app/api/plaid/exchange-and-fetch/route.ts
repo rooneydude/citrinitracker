@@ -4,11 +4,20 @@ import {
   assertPlaidConfigured,
   mapPlaidHoldings,
 } from "@/lib/plaid";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
   const configError = assertPlaidConfigured();
   if (configError) {
     return NextResponse.json({ error: configError }, { status: 500 });
@@ -28,6 +37,7 @@ export async function POST(request: Request) {
       public_token,
     });
     const accessToken = exchangeResponse.data.access_token;
+    const itemId = exchangeResponse.data.item_id;
 
     const holdingsResponse = await plaidClient.investmentsHoldingsGet({
       access_token: accessToken,
@@ -39,10 +49,39 @@ export async function POST(request: Request) {
       holdingsResponse.data.securities
     );
 
-    return NextResponse.json({
-      ...mapped,
-      access_token: accessToken,
-    });
+    // Persist the access_token server-side — it never goes to the client.
+    const { error: tokenErr } = await supabase
+      .from("plaid_tokens")
+      .upsert(
+        {
+          user_id: user.id,
+          access_token: accessToken,
+          item_id: itemId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+    if (tokenErr) {
+      return NextResponse.json(
+        { error: `Failed to store Plaid token: ${tokenErr.message}` },
+        { status: 500 }
+      );
+    }
+
+    // Reflect the fresh holdings back into user_state so a reload sees them
+    // even before the next Plaid refresh fires.
+    await supabase.from("user_state").upsert(
+      {
+        user_id: user.id,
+        rh_holdings: mapped.holdings,
+        portfolio_value: mapped.portfolioValue > 0 ? mapped.portfolioValue : null,
+        plaid_last_refreshed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" }
+    );
+
+    return NextResponse.json({ ...mapped, connected: true });
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch holdings";

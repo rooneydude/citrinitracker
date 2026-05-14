@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { plaidClient, assertPlaidConfigured } from "@/lib/plaid";
 import { Products, CountryCode } from "plaid";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
   const configError = assertPlaidConfigured();
   if (configError) {
     return NextResponse.json({ error: configError }, { status: 500 });
@@ -13,7 +22,7 @@ export async function POST() {
 
   try {
     const response = await plaidClient.linkTokenCreate({
-      user: { client_user_id: "citrini-user" },
+      user: { client_user_id: user.id },
       client_name: "Citrini Tracker",
       products: [Products.Investments],
       country_codes: [CountryCode.Us],
